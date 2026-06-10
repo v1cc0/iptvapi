@@ -167,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
         .route(ppv::PPV_PLAYLIST_PATH, get(get_ppv_playlist_m3u))
         .route(ppv::PPV_STATUS_PATH, get(get_ppv_status))
         .route("/ppv/status.json", get(get_ppv_status_json))
-        .route("/ppv/play/{id}", get(get_ppv_play_hls))
+        .route("/ppv/play/{*id}", get(get_ppv_play_hls))
         .route("/status", get(get_status))
         .route("/engine/status", get(get_engine_status))
         .route("/metrics", get(get_metrics))

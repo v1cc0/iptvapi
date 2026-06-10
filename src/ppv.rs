@@ -629,6 +629,10 @@ mod tests {
         assert_eq!(urlencode("abc"), "abc");
         assert_eq!(urlencode("rally-tv"), "rally-tv");
         assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
+        assert_eq!(
+            urlencode("cfl/2026-06-11/ham-wpg"),
+            "cfl%2F2026-06-11%2Fham-wpg"
+        );
     }
 
     #[test]
