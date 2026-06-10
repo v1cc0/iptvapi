@@ -1,0 +1,123 @@
+
+[server]
+host = "0.0.0.0"
+port = 12315
+open_service = true
+
+[engine]
+open_update = true
+open_speed_test = true
+update_interval = 12
+update_mode = "interval"
+update_times = ""
+time_zone = "Asia/Shanghai"
+update_startup = true
+request_timeout = 10
+http_proxy = ""
+speed_test_limit = 5
+speed_test_timeout = 10
+speed_test_allow_invalid_certs = true
+speed_test_max_download_bytes = 8388608
+speed_test_segment_concurrency = 2
+speed_test_filter_host = false
+open_full_speed_test = false
+open_filter_speed = true
+open_supply = false
+min_speed = 0.5
+open_filter_resolution = true
+min_resolution = "1920x1080"
+max_resolution = "1920x1080"
+resolution_speed_map = {}
+ipv6_support = true
+ipv_type = "all"
+
+[filter]
+whitelist_path = "/config/whitelist.txt"
+blacklist_path = "/config/blacklist.txt"
+location = []
+isp = []
+ipdb_path = "/utils/ip_checker/data/qqwry.ipdb"
+
+[subscribe]
+enabled = true
+sources_path = "/config/subscribe.txt"
+timeout_ms = 30000
+concurrency = 10
+cdn_url = ""
+http_proxy = ""
+alias_path = "/config/alias.txt"
+nomatch_log_path = "/output/log/nomatch.log"
+
+[epg]
+enabled = true
+sources_path = "/config/epg.txt"
+output_xml_path = "/output/epg/epg.xml"
+output_gz_path = "/output/epg/epg.gz"
+timeout_ms = 30000
+concurrency = 10
+cdn_url = ""
+http_proxy = ""
+alias_path = "/config/alias.txt"
+
+[local]
+enabled = true
+file_path = "/config/local.txt"
+dir_path = "/config/local"
+match_aliases = true
+hls_enabled = false
+hls_dir_path = "/config/hls"
+hls_temp_path = "/tmp/hls"
+nginx_dir_path = "/utils/nginx-rtmp-win32"
+nginx_http_port = 8080
+nginx_rtmp_port = 1935
+rtmp_idle_timeout = 300
+rtmp_max_streams = 10
+
+[output]
+result_txt_path = "/output/result.txt"
+result_m3u_path = "/output/result.m3u"
+m3u_result_enabled = true
+ipv4_result_txt_path = "/output/ipv4/result.txt"
+ipv4_result_m3u_path = "/output/ipv4/result.m3u"
+ipv6_result_txt_path = "/output/ipv6/result.txt"
+ipv6_result_m3u_path = "/output/ipv6/result.m3u"
+hls_result_txt_path = "/output/hls.txt"
+hls_result_m3u_path = "/output/hls.m3u"
+hls_ipv4_result_txt_path = "/output/ipv4/hls.txt"
+hls_ipv4_result_m3u_path = "/output/ipv4/hls.m3u"
+hls_ipv6_result_txt_path = "/output/ipv6/hls.txt"
+hls_ipv6_result_m3u_path = "/output/ipv6/hls.m3u"
+rtmp_data_path = "../output/data/rtmp.db"
+logo_dir = "../config/logo"
+logo_url = ""
+logo_type = "png"
+public_base_url = ""
+public_scheme = "http"
+public_domain = "127.0.0.1"
+urls_limit = 10
+local_num = 10
+subscribe_num = 10
+recent_days = 30
+origin_type_prefer = []
+ipv_type_prefer = []
+result_log_path = "/output/log/result.log"
+speed_test_log_path = "/output/log/speed_test.log"
+statistic_log_path = "/output/log/statistic.log"
+update_time_enabled = true
+update_time_position = "top"
+time_zone = "Asia/Shanghai"
+language = "zh_CN"
+open_url_info = true
+open_headers = false
+open_empty_category = false
+open_history = true
+open_use_cache = true
+open_request = false
+open_realtime_write = true
+cache_path = "/output/data/cache.gz"
+frozen_path = "/output/data/frozen.gz"
+
+[[sources]]
+name = "Demo Source"
+url = "/config/demo.txt"
+source_type = "txt"

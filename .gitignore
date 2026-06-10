@@ -1,0 +1,20 @@
+
+#codegraph
+.codegraph/
+
+# packages
+node_modules/
+
+# local dev config
+.dev.vars
+.env
+config.toml
+.cargo-remote.toml
+
+# agent files
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+PROGRESS.md
+PROGRESS.md.lastround
+INCIDENTS.md

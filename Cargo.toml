@@ -1,0 +1,65 @@
+[package]
+name = "iptvapi"
+version = "0.0.3"
+edition = "2024"
+
+[dependencies]
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web Framework
+axum = "0.8.9"
+tower-http = { version = "0.6.11", features = ["cors", "fs"] }
+
+# HTTP Client
+reqwest = { version = "0.13.3", default-features = false, features = [
+  "json",
+  "rustls",
+  "stream",
+  "cookies",
+] }
+
+# Serialization & Deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1.2"
+
+# Concurrency & Data
+dashmap = "6.2"
+arc-swap = "1.9"
+anyhow = "1.0"
+
+# Telemetry
+metrics = "0.24.6"
+metrics-exporter-prometheus = "0.18.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+m3u8-rs = "6.0"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10.4"
+regex = "1.12"
+fancy-regex = "0.18.0"
+ferrous-opencc = { version = "0.4.0", default-features = false, features = [
+  "t2s-conversion",
+] }
+url = "2.5"
+futures = "0.3"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+tempfile = "3.27.0"
+wasmi = "2.0.0-beta.2"
+roxmltree = "0.21.1"
+flate2 = "1.1.9"
+serde-pickle = "1.2.0"
+ipdb = "0.1.4"
+rusqlite = { version = "0.40.0", features = ["bundled"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
