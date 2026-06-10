@@ -19,6 +19,8 @@ const SOURCE_TTL: u64 = 300;
 const TOKEN_MARGIN: u64 = 90;
 
 static POO_DOMAIN_CACHE: OnceLock<DashMap<String, (String, u64)>> = OnceLock::new();
+static STREAMS_CACHE: OnceLock<DashMap<String, (Vec<u8>, u64)>> = OnceLock::new();
+const STREAMS_CACHE_TTL: u64 = 30;
 
 fn get_cached_poo_domain() -> Option<String> {
     if let Some(entry) = POO_DOMAIN_CACHE.get_or_init(DashMap::new).get("domain") {
@@ -109,18 +111,18 @@ pub struct PpvStatus {
     pub cached_sources: usize,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 struct PpvStreamsResponse {
     streams: Option<Vec<PpvCategory>>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 struct PpvCategory {
     name: Option<String>,
     streams: Option<Vec<PpvStreamItem>>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 struct PpvStreamItem {
     id: serde_json::Value,
     name: Option<String>,
@@ -489,7 +491,30 @@ fn abs_m3u8(text: &str, base: &str) -> String {
     out.join("\n") + "\n"
 }
 
+fn cached_streams() -> Option<PpvStreamsResponse> {
+    let cache = STREAMS_CACHE.get_or_init(DashMap::new);
+    if let Some(entry) = cache.get("streams") {
+        let (bytes, expires_at) = entry.value();
+        if *expires_at > now_secs() {
+            return serde_json::from_slice(bytes).ok();
+        }
+    }
+    None
+}
+
+fn cache_streams(resp: &PpvStreamsResponse) {
+    if let Ok(bytes) = serde_json::to_vec(resp) {
+        STREAMS_CACHE.get_or_init(DashMap::new).insert(
+            "streams".to_owned(),
+            (bytes, now_secs() + STREAMS_CACHE_TTL),
+        );
+    }
+}
+
 async fn fetch_ppv_streams_json(client: &reqwest::Client) -> anyhow::Result<PpvStreamsResponse> {
+    if let Some(cached) = cached_streams() {
+        return Ok(cached);
+    }
     let resp = client
         .get(PPV_STREAMS)
         .header("User-Agent", BROWSER_UA)
@@ -498,6 +523,7 @@ async fn fetch_ppv_streams_json(client: &reqwest::Client) -> anyhow::Result<PpvS
         .error_for_status()?
         .json::<PpvStreamsResponse>()
         .await?;
+    cache_streams(&resp);
     Ok(resp)
 }
 
@@ -817,6 +843,7 @@ pub async fn ppv_hls_playlist(id: &str) -> anyhow::Result<(String, &'static str)
             );
             clear_poo_domain_cache();
             room_cache().remove(id.trim());
+            STREAMS_CACHE.get_or_init(DashMap::new).remove("streams");
             let streams_resp = fetch_ppv_streams_json(&client).await?;
             extract_and_cache_poo_domain(&streams_resp);
             let (slug, domain) = resolve_room_from_streams(id, &streams_resp)?;
@@ -954,6 +981,47 @@ mod tests {
 
         clear_poo_domain_cache();
         assert!(get_cached_poo_domain().is_none());
+    }
+
+    #[test]
+    fn test_streams_cache_roundtrip() {
+        STREAMS_CACHE.get_or_init(DashMap::new).remove("streams");
+        assert!(cached_streams().is_none());
+
+        let resp = PpvStreamsResponse {
+            streams: Some(vec![PpvCategory {
+                name: Some("Test".into()),
+                streams: Some(vec![PpvStreamItem {
+                    id: serde_json::Value::String("42".into()),
+                    name: Some("Test Match".into()),
+                    uri_name: Some("test/match".into()),
+                    logo: None,
+                    iframe: Some("https://embed.example/42".into()),
+                }]),
+            }]),
+        };
+        cache_streams(&resp);
+
+        let cached = cached_streams().unwrap();
+        let cat = &cached.streams.unwrap()[0];
+        assert_eq!(cat.name.as_deref(), Some("Test"));
+        let item = &cat.streams.as_ref().unwrap()[0];
+        assert_eq!(item.uri_name.as_deref(), Some("test/match"));
+    }
+
+    #[test]
+    fn test_streams_cache_expires() {
+        STREAMS_CACHE.get_or_init(DashMap::new).remove("streams");
+
+        let resp = PpvStreamsResponse { streams: None };
+        cache_streams(&resp);
+
+        // artificially expire
+        STREAMS_CACHE.get_or_init(DashMap::new).insert(
+            "streams".to_owned(),
+            (serde_json::to_vec(&resp).unwrap(), now_secs() - 1),
+        );
+        assert!(cached_streams().is_none());
     }
 
     #[test]
