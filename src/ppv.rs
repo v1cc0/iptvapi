@@ -657,6 +657,21 @@ pub async fn resolve_live_m3u8(
     Ok((text, final_url, "MISS"))
 }
 
+/// Check whether a PPV slug should appear in today's playlist.
+/// Slugs whose second path segment matches YYYY-MM-DD are filtered to
+/// today (local timezone).  Slugs without a recognisable date are always
+/// included.
+fn is_today(slug: &str, today: chrono::NaiveDate) -> bool {
+    let parts: Vec<&str> = slug.split('/').collect();
+    if parts.len() < 2 {
+        return true; // no date segment -> always include
+    }
+    match chrono::NaiveDate::parse_from_str(parts[1], "%Y-%m-%d") {
+        Ok(date) => date == today,
+        Err(_) => true, // not a date -> always include
+    }
+}
+
 pub async fn generate_ppv_playlist_m3u(
     client: &reqwest::Client,
     base_url: &str,
@@ -665,6 +680,7 @@ pub async fn generate_ppv_playlist_m3u(
     extract_and_cache_poo_domain(&streams_resp);
     let mut m3u = String::from("#EXTM3U\n");
     let base_url = base_url.trim_end_matches('/');
+    let today = chrono::Local::now().date_naive();
 
     if let Some(categories) = &streams_resp.streams {
         for cat in categories {
@@ -678,6 +694,10 @@ pub async fn generate_ppv_playlist_m3u(
                     };
                     let uri_name = item.uri_name.as_deref().unwrap_or("").trim();
                     if uri_name.is_empty() {
+                        continue;
+                    }
+                    // Only include today's matches + non-date events
+                    if !is_today(uri_name, today) {
                         continue;
                     }
                     let name = item.name.as_deref().unwrap_or(&item_id_str);
@@ -859,5 +879,45 @@ mod tests {
 
         clear_poo_domain_cache();
         assert!(get_cached_poo_domain().is_none());
+    }
+
+    #[test]
+    fn test_is_today_date_match() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        // exact match
+        assert!(is_today("cfl/2026-06-11/ham-wpg", today));
+        assert!(is_today("mlb/2026-06-11/nyy-bos", today));
+        assert!(is_today("wc/2026-06-11/mex-rsa", today));
+    }
+
+    #[test]
+    fn test_is_today_date_mismatch() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        // different dates
+        assert!(!is_today("cfl/2026-06-10/ham-wpg", today));
+        assert!(!is_today("cfl/2026-06-12/tor-mtl", today));
+        assert!(!is_today("afle/2026-06-13/alp-vie", today));
+        assert!(!is_today("mlb/2026-05-30/sea-bal", today));
+    }
+
+    #[test]
+    fn test_is_today_no_date_always_included() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        // slugs without YYYY-MM-DD in second segment
+        assert!(is_today("ufc-freedom-250", today));
+        assert!(is_today("rally-tv", today));
+        assert!(is_today("fia-wec/2026/lemans/fp2", today)); // "2026" not YYYY-MM-DD
+        assert!(is_today("nba-finals-2026", today));
+        assert!(is_today("", today));
+        assert!(is_today("single-segment", today));
+    }
+
+    #[test]
+    fn test_is_today_multi_segment_no_date() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        // second segment is not a date
+        assert!(is_today("fia-wec/2026/lemans/fp2", today));
+        assert!(is_today("nba/playoffs/game7", today));
+        assert!(is_today("soccer/friendly/bra-arg", today));
     }
 }
