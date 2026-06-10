@@ -5,10 +5,10 @@ mod error_log;
 #[allow(dead_code)]
 mod gdtv;
 mod gdtv_signer;
-mod ppv;
 mod history;
 mod models;
 mod playlist;
+mod ppv;
 mod subscribe;
 mod telemetry;
 
@@ -982,8 +982,11 @@ async fn get_ppv_play_hls(Path(id): Path<String>) -> impl IntoResponse {
         )
             .into_response(),
         Err(error) => {
-            crate::error_log::push("ppv", format!("failed to resolve ppv channel {id}: {error:#}"))
-                .await;
+            crate::error_log::push(
+                "ppv",
+                format!("failed to resolve ppv channel {id}: {error:#}"),
+            )
+            .await;
             tracing::warn!("Failed to resolve PPV channel {id}: {error:#}");
             (StatusCode::NOT_FOUND, "PPV channel unavailable").into_response()
         }

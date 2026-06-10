@@ -40,12 +40,34 @@ fn poo_domain() -> String {
     })
 }
 
-fn poo_fetch_url() -> String {
-    format!("https://{}/fetch", poo_domain())
+fn poo_fetch_url_for(domain: &str) -> String {
+    format!("https://{}/fetch", domain)
 }
 
-fn poo_origin() -> String {
-    format!("https://{}", poo_domain())
+fn poo_origin_for(domain: &str) -> String {
+    format!("https://{}", domain)
+}
+
+fn iframe_domain(item: &PpvStreamItem) -> Option<String> {
+    let iframe = item.iframe.as_deref()?.trim();
+    let parsed = Url::parse(iframe).ok()?;
+    let host = parsed.host_str()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_owned())
+    }
+}
+
+fn cache_poo_domain(domain: &str) {
+    let domain = domain.trim();
+    if domain.is_empty() {
+        return;
+    }
+    let expires_at = now_secs() + 300; // 5 mins TTL
+    POO_DOMAIN_CACHE
+        .get_or_init(DashMap::new)
+        .insert("domain".to_owned(), (domain.to_owned(), expires_at));
 }
 
 fn extract_and_cache_poo_domain(resp: &PpvStreamsResponse) {
@@ -53,20 +75,9 @@ fn extract_and_cache_poo_domain(resp: &PpvStreamsResponse) {
         for cat in categories {
             if let Some(streams) = &cat.streams {
                 for item in streams {
-                    if let Some(iframe) = &item.iframe {
-                        if let Ok(parsed) = Url::parse(iframe) {
-                            if let Some(host) = parsed.host_str() {
-                                let host_cleaned = host.trim();
-                                if !host_cleaned.is_empty() {
-                                    let expires_at = now_secs() + 300; // 5 mins TTL
-                                    POO_DOMAIN_CACHE.get_or_init(DashMap::new).insert(
-                                        "domain".to_owned(),
-                                        (host_cleaned.to_owned(), expires_at),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
+                    if let Some(domain) = iframe_domain(item) {
+                        cache_poo_domain(&domain);
+                        return;
                     }
                 }
             }
@@ -89,6 +100,7 @@ async fn ensure_poo_domain_fresh(client: &reqwest::Client) -> anyhow::Result<Str
 
 struct CachedRoom {
     slug: String,
+    domain: String,
     expires_at: u64,
 }
 
@@ -418,8 +430,13 @@ fn m3u8_refs(text: &str, base: &str) -> Vec<M3u8Ref> {
     refs
 }
 
-async fn hls_get(client: &reqwest::Client, url: &str, slug: &str) -> anyhow::Result<String> {
-    let origin = poo_origin();
+async fn hls_get(
+    client: &reqwest::Client,
+    url: &str,
+    slug: &str,
+    domain: &str,
+) -> anyhow::Result<String> {
+    let origin = poo_origin_for(domain);
     let referer = format!("{}/embed/{}", origin, urlencode(slug));
     let text = client
         .get(url)
@@ -493,11 +510,11 @@ async fn fetch_ppv_streams_json(client: &reqwest::Client) -> anyhow::Result<PpvS
     Ok(resp)
 }
 
-pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Result<String> {
+async fn resolve_room(client: &reqwest::Client, id: &str) -> anyhow::Result<(String, String)> {
     let id_trimmed = id.trim();
     if let Some(cached) = room_cache().get(id_trimmed) {
         if cached.expires_at > now_secs() {
-            return Ok(cached.slug.clone());
+            return Ok((cached.slug.clone(), cached.domain.clone()));
         }
     }
 
@@ -521,14 +538,17 @@ pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Re
                     {
                         if !uri_name.is_empty() {
                             let slug = uri_name.to_owned();
+                            let domain = iframe_domain(item).unwrap_or_else(poo_domain);
+                            cache_poo_domain(&domain);
                             room_cache().insert(
                                 id_trimmed.to_owned(),
                                 CachedRoom {
                                     slug: slug.clone(),
+                                    domain: domain.clone(),
                                     expires_at: now_secs() + ROOM_TTL,
                                 },
                             );
-                            return Ok(slug);
+                            return Ok((slug, domain));
                         }
                     }
                 }
@@ -539,13 +559,22 @@ pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Re
     anyhow::bail!("room not found")
 }
 
-async fn fetch_fresh_url(client: &reqwest::Client, slug: &str) -> anyhow::Result<String> {
+#[allow(dead_code)]
+pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Result<String> {
+    resolve_room(client, id).await.map(|(slug, _)| slug)
+}
+
+async fn fetch_fresh_url(
+    client: &reqwest::Client,
+    slug: &str,
+    domain: &str,
+) -> anyhow::Result<String> {
     let body = pb_put(1, slug);
-    let origin = poo_origin();
+    let origin = poo_origin_for(domain);
     let referer = format!("{}/embed/{}", origin, urlencode(slug));
 
     let resp = client
-        .post(poo_fetch_url())
+        .post(poo_fetch_url_for(domain))
         .header("Content-Type", "application/octet-stream")
         .header("Origin", origin)
         .header("Referer", referer)
@@ -576,6 +605,7 @@ async fn final_m3u8(
     client: &reqwest::Client,
     mut url: String,
     slug: &str,
+    domain: &str,
 ) -> anyhow::Result<(String, String)> {
     let mut seen = std::collections::HashSet::new();
     for _ in 0..8 {
@@ -583,7 +613,7 @@ async fn final_m3u8(
             anyhow::bail!("m3u8 loop");
         }
         seen.insert(url.clone());
-        let text = hls_get(client, &url, slug).await?;
+        let text = hls_get(client, &url, slug, domain).await?;
         let refs = m3u8_refs(&text, &url);
         if refs.is_empty() {
             return Ok((text, url));
@@ -596,27 +626,29 @@ async fn final_m3u8(
 pub async fn resolve_live_m3u8(
     client: &reqwest::Client,
     slug: &str,
+    domain: &str,
 ) -> anyhow::Result<(String, String, &'static str)> {
-    if let Some(cached) = source_cache().get(slug) {
+    let cache_key = format!("{domain}|{slug}");
+    if let Some(cached) = source_cache().get(&cache_key) {
         if cached.expires_at > now_secs() {
-            match hls_get(client, &cached.final_url, slug).await {
+            match hls_get(client, &cached.final_url, slug, domain).await {
                 Ok(text) => {
                     if m3u8_refs(&text, &cached.final_url).is_empty() {
                         return Ok((text, cached.final_url.clone(), "HIT"));
                     }
                 }
                 Err(_) => {
-                    source_cache().remove(slug);
+                    source_cache().remove(&cache_key);
                 }
             }
         }
     }
 
-    let source = fetch_fresh_url(client, slug).await?;
-    let (text, final_url) = final_m3u8(client, source.clone(), slug).await?;
+    let source = fetch_fresh_url(client, slug, domain).await?;
+    let (text, final_url) = final_m3u8(client, source.clone(), slug, domain).await?;
     let expires = source_until(&source, &final_url);
     source_cache().insert(
-        slug.to_owned(),
+        cache_key,
         CachedSource {
             final_url: final_url.clone(),
             expires_at: expires,
@@ -677,19 +709,23 @@ pub async fn ppv_status() -> PpvStatus {
 pub async fn ppv_hls_playlist(id: &str) -> anyhow::Result<(String, &'static str)> {
     let client = get_client();
     let _ = ensure_poo_domain_fresh(&client).await;
-    let slug = resolve_room_slug(&client, id).await?;
-    match resolve_live_m3u8(&client, &slug).await {
+    let (slug, domain) = resolve_room(&client, id).await?;
+    match resolve_live_m3u8(&client, &slug, &domain).await {
         Ok((m3u8, base, cache_status)) => {
             let absolute_m3u8 = abs_m3u8(&m3u8, &base);
             Ok((absolute_m3u8, cache_status))
         }
         Err(err) => {
-            tracing::warn!("Failed first resolve attempt for slug {slug}: {err:#}. Retrying with fresh domain...");
+            tracing::warn!(
+                "Failed first resolve attempt for slug {slug}: {err:#}. Retrying with fresh domain..."
+            );
             clear_poo_domain_cache();
+            room_cache().remove(id.trim());
             if let Err(e) = ensure_poo_domain_fresh(&client).await {
                 tracing::warn!("Failed to refresh domain on retry: {e:#}");
             }
-            let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug).await?;
+            let (slug, domain) = resolve_room(&client, id).await?;
+            let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug, &domain).await?;
             let absolute_m3u8 = abs_m3u8(&m3u8, &base);
             Ok((absolute_m3u8, cache_status))
         }
@@ -780,9 +816,7 @@ mod tests {
     #[test]
     fn test_secure_until() {
         assert_eq!(
-            secure_until(
-                "https://example.com/live/secure/token/123/1779641799/playlist.m3u8"
-            ),
+            secure_until("https://example.com/live/secure/token/123/1779641799/playlist.m3u8"),
             Some(1779641799 - 90)
         );
         assert_eq!(
@@ -797,7 +831,9 @@ mod tests {
         let client = get_client();
         let slug = resolve_room_slug(&client, "rally-tv").await.unwrap();
         assert_eq!(slug, "rally-tv");
-        let (m3u8, base, cache) = resolve_live_m3u8(&client, &slug).await.unwrap();
+        let (m3u8, base, cache) = resolve_live_m3u8(&client, &slug, &poo_domain())
+            .await
+            .unwrap();
         println!("M3U8: {}", m3u8);
         println!("Base: {}", base);
         println!("Cache: {}", cache);
@@ -825,4 +861,3 @@ mod tests {
         assert!(get_cached_poo_domain().is_none());
     }
 }
-
