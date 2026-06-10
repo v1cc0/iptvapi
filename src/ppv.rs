@@ -89,15 +89,6 @@ fn clear_poo_domain_cache() {
     POO_DOMAIN_CACHE.get_or_init(DashMap::new).remove("domain");
 }
 
-async fn ensure_poo_domain_fresh(client: &reqwest::Client) -> anyhow::Result<String> {
-    if let Some(domain) = get_cached_poo_domain() {
-        return Ok(domain);
-    }
-    let resp = fetch_ppv_streams_json(client).await?;
-    extract_and_cache_poo_domain(&resp);
-    Ok(poo_domain())
-}
-
 struct CachedRoom {
     slug: String,
     domain: String,
@@ -510,6 +501,7 @@ async fn fetch_ppv_streams_json(client: &reqwest::Client) -> anyhow::Result<PpvS
     Ok(resp)
 }
 
+#[allow(dead_code)]
 async fn resolve_room(client: &reqwest::Client, id: &str) -> anyhow::Result<(String, String)> {
     let id_trimmed = id.trim();
     if let Some(cached) = room_cache().get(id_trimmed) {
@@ -562,6 +554,55 @@ async fn resolve_room(client: &reqwest::Client, id: &str) -> anyhow::Result<(Str
 #[allow(dead_code)]
 pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Result<String> {
     resolve_room(client, id).await.map(|(slug, _)| slug)
+}
+
+/// Like [`resolve_room`] but searches a pre-fetched streams response
+/// instead of making its own network call.
+fn resolve_room_from_streams(
+    id: &str,
+    streams_resp: &PpvStreamsResponse,
+) -> anyhow::Result<(String, String)> {
+    let id_trimmed = id.trim();
+    if let Some(cached) = room_cache().get(id_trimmed) {
+        if cached.expires_at > now_secs() {
+            return Ok((cached.slug.clone(), cached.domain.clone()));
+        }
+    }
+    let want = id_trimmed.strip_prefix("ppv-").unwrap_or(id_trimmed);
+    if let Some(categories) = &streams_resp.streams {
+        for cat in categories {
+            if let Some(streams) = &cat.streams {
+                for item in streams {
+                    let item_id_str = match &item.id {
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::String(s) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let uri_name = item.uri_name.as_deref().unwrap_or("").trim();
+                    if item_id_str == want
+                        || format!("ppv-{}", item_id_str) == id_trimmed
+                        || uri_name == id_trimmed
+                    {
+                        if !uri_name.is_empty() {
+                            let slug = uri_name.to_owned();
+                            let domain = iframe_domain(item).unwrap_or_else(poo_domain);
+                            cache_poo_domain(&domain);
+                            room_cache().insert(
+                                id_trimmed.to_owned(),
+                                CachedRoom {
+                                    slug: slug.clone(),
+                                    domain: domain.clone(),
+                                    expires_at: now_secs() + ROOM_TTL,
+                                },
+                            );
+                            return Ok((slug, domain));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    anyhow::bail!("room not found")
 }
 
 async fn fetch_fresh_url(
@@ -728,25 +769,57 @@ pub async fn ppv_status() -> PpvStatus {
     }
 }
 
+/// Errors that are unlikely to be fixed by rotating the CDN domain.
+fn is_non_retryable(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    // CDN returned non-HLS content (e.g. PNG error placeholder) —
+    // rotating the domain won't help because the upstream token is the
+    // same across all domains.
+    msg.contains("not m3u8")
+    // m3u8 loops and depth limits are internal consistency errors.
+        || msg.contains("m3u8 loop")
+        || msg.contains("m3u8 too deep")
+    // Decryption / payload errors come from the PPV API itself (bad
+    // island, corrupt base64, AEAD failure) — changing the domain
+    // won't fix these.
+        || msg.contains("no island header")
+        || msg.contains("base64 decode failed")
+        || msg.contains("chacha20poly1305 decryption failed")
+        || msg.contains("bad payload length")
+        || msg.contains("field 1 not found")
+        || msg.contains("bad wire")
+        || msg.contains("bad varint")
+        || msg.contains("short varint")
+        || msg.contains("short field")
+}
+
 pub async fn ppv_hls_playlist(id: &str) -> anyhow::Result<(String, &'static str)> {
     let client = get_client();
-    let _ = ensure_poo_domain_fresh(&client).await;
-    let (slug, domain) = resolve_room(&client, id).await?;
+
+    // Single PPV streams fetch that serves both domain-freshness and
+    // room resolution, avoiding the old double-fetch in the normal
+    // path.
+    let streams_resp = fetch_ppv_streams_json(&client).await?;
+    extract_and_cache_poo_domain(&streams_resp);
+    let (slug, domain) = resolve_room_from_streams(id, &streams_resp)?;
+
     match resolve_live_m3u8(&client, &slug, &domain).await {
         Ok((m3u8, base, cache_status)) => {
             let absolute_m3u8 = abs_m3u8(&m3u8, &base);
             Ok((absolute_m3u8, cache_status))
         }
         Err(err) => {
+            if is_non_retryable(&err) {
+                return Err(err);
+            }
             tracing::warn!(
                 "Failed first resolve attempt for slug {slug}: {err:#}. Retrying with fresh domain..."
             );
             clear_poo_domain_cache();
             room_cache().remove(id.trim());
-            if let Err(e) = ensure_poo_domain_fresh(&client).await {
-                tracing::warn!("Failed to refresh domain on retry: {e:#}");
-            }
-            let (slug, domain) = resolve_room(&client, id).await?;
+            let streams_resp = fetch_ppv_streams_json(&client).await?;
+            extract_and_cache_poo_domain(&streams_resp);
+            let (slug, domain) = resolve_room_from_streams(id, &streams_resp)?;
             let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug, &domain).await?;
             let absolute_m3u8 = abs_m3u8(&m3u8, &base);
             Ok((absolute_m3u8, cache_status))
@@ -940,5 +1013,53 @@ mod tests {
         // date in fourth segment
         assert!(is_today("league/season/round/2026-06-11", today));
         assert!(!is_today("league/season/round/2026-06-10", today));
+    }
+
+    #[test]
+    fn test_is_non_retryable() {
+        // CDN returning non-HLS content — domain rotation won't fix
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("not m3u8")
+        ));
+        // internal consistency errors
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("m3u8 loop")
+        ));
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("m3u8 too deep")
+        ));
+        // PPV API payload errors
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("no island header in fetch response")
+        ));
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("base64 decode failed: ...")
+        ));
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("chacha20poly1305 decryption failed: ...")
+        ));
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("bad payload length")
+        ));
+        assert!(is_non_retryable(
+            &anyhow::anyhow!("field 1 not found")
+        ));
+    }
+
+    #[test]
+    fn test_is_retryable() {
+        // Network / HTTP errors — domain rotation MIGHT help
+        assert!(!is_non_retryable(
+            &anyhow::anyhow!("HTTP status client error (403 Forbidden)")
+        ));
+        assert!(!is_non_retryable(
+            &anyhow::anyhow!("HTTP status server error (502 Bad Gateway)")
+        ));
+        assert!(!is_non_retryable(
+            &anyhow::anyhow!("error sending request for url: connection error: timeout")
+        ));
+        assert!(!is_non_retryable(
+            &anyhow::anyhow!("connection closed before message completed")
+        ));
     }
 }
