@@ -18,12 +18,26 @@ const ROOM_TTL: u64 = 600;
 const SOURCE_TTL: u64 = 300;
 const TOKEN_MARGIN: u64 = 90;
 
+static POO_DOMAIN_CACHE: OnceLock<DashMap<String, (String, u64)>> = OnceLock::new();
+
+fn get_cached_poo_domain() -> Option<String> {
+    if let Some(entry) = POO_DOMAIN_CACHE.get_or_init(DashMap::new).get("domain") {
+        let (domain, expires_at) = entry.value();
+        if *expires_at > now_secs() {
+            return Some(domain.clone());
+        }
+    }
+    None
+}
+
 fn poo_domain() -> String {
-    std::env::var("TV_POO_DOMAIN")
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "pooembed.top".to_owned())
+    get_cached_poo_domain().unwrap_or_else(|| {
+        std::env::var("TV_POO_DOMAIN")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "embedindia.st".to_owned())
+    })
 }
 
 fn poo_fetch_url() -> String {
@@ -32,6 +46,45 @@ fn poo_fetch_url() -> String {
 
 fn poo_origin() -> String {
     format!("https://{}", poo_domain())
+}
+
+fn extract_and_cache_poo_domain(resp: &PpvStreamsResponse) {
+    if let Some(categories) = &resp.streams {
+        for cat in categories {
+            if let Some(streams) = &cat.streams {
+                for item in streams {
+                    if let Some(iframe) = &item.iframe {
+                        if let Ok(parsed) = Url::parse(iframe) {
+                            if let Some(host) = parsed.host_str() {
+                                let host_cleaned = host.trim();
+                                if !host_cleaned.is_empty() {
+                                    let expires_at = now_secs() + 300; // 5 mins TTL
+                                    POO_DOMAIN_CACHE.get_or_init(DashMap::new).insert(
+                                        "domain".to_owned(),
+                                        (host_cleaned.to_owned(), expires_at),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn clear_poo_domain_cache() {
+    POO_DOMAIN_CACHE.get_or_init(DashMap::new).remove("domain");
+}
+
+async fn ensure_poo_domain_fresh(client: &reqwest::Client) -> anyhow::Result<String> {
+    if let Some(domain) = get_cached_poo_domain() {
+        return Ok(domain);
+    }
+    let resp = fetch_ppv_streams_json(client).await?;
+    extract_and_cache_poo_domain(&resp);
+    Ok(poo_domain())
 }
 
 struct CachedRoom {
@@ -70,6 +123,7 @@ struct PpvStreamItem {
     name: Option<String>,
     uri_name: Option<String>,
     logo: Option<String>,
+    iframe: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -448,11 +502,12 @@ pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Re
     }
 
     let streams_resp = fetch_ppv_streams_json(client).await?;
+    extract_and_cache_poo_domain(&streams_resp);
     let want = id_trimmed.strip_prefix("ppv-").unwrap_or(id_trimmed);
 
-    if let Some(categories) = streams_resp.streams {
+    if let Some(categories) = &streams_resp.streams {
         for cat in categories {
-            if let Some(streams) = cat.streams {
+            if let Some(streams) = &cat.streams {
                 for item in streams {
                     let item_id_str = match &item.id {
                         serde_json::Value::Number(n) => n.to_string(),
@@ -575,13 +630,14 @@ pub async fn generate_ppv_playlist_m3u(
     base_url: &str,
 ) -> anyhow::Result<String> {
     let streams_resp = fetch_ppv_streams_json(client).await?;
+    extract_and_cache_poo_domain(&streams_resp);
     let mut m3u = String::from("#EXTM3U\n");
     let base_url = base_url.trim_end_matches('/');
 
-    if let Some(categories) = streams_resp.streams {
+    if let Some(categories) = &streams_resp.streams {
         for cat in categories {
             let cat_name = cat.name.as_deref().unwrap_or("PPV");
-            if let Some(streams) = cat.streams {
+            if let Some(streams) = &cat.streams {
                 for item in streams {
                     let item_id_str = match &item.id {
                         serde_json::Value::Number(n) => n.to_string(),
@@ -620,10 +676,24 @@ pub async fn ppv_status() -> PpvStatus {
 
 pub async fn ppv_hls_playlist(id: &str) -> anyhow::Result<(String, &'static str)> {
     let client = get_client();
+    let _ = ensure_poo_domain_fresh(&client).await;
     let slug = resolve_room_slug(&client, id).await?;
-    let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug).await?;
-    let absolute_m3u8 = abs_m3u8(&m3u8, &base);
-    Ok((absolute_m3u8, cache_status))
+    match resolve_live_m3u8(&client, &slug).await {
+        Ok((m3u8, base, cache_status)) => {
+            let absolute_m3u8 = abs_m3u8(&m3u8, &base);
+            Ok((absolute_m3u8, cache_status))
+        }
+        Err(err) => {
+            tracing::warn!("Failed first resolve attempt for slug {slug}: {err:#}. Retrying with fresh domain...");
+            clear_poo_domain_cache();
+            if let Err(e) = ensure_poo_domain_fresh(&client).await {
+                tracing::warn!("Failed to refresh domain on retry: {e:#}");
+            }
+            let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug).await?;
+            let absolute_m3u8 = abs_m3u8(&m3u8, &base);
+            Ok((absolute_m3u8, cache_status))
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -720,4 +790,39 @@ mod tests {
             None
         );
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_live_fetch() {
+        let client = get_client();
+        let slug = resolve_room_slug(&client, "rally-tv").await.unwrap();
+        assert_eq!(slug, "rally-tv");
+        let (m3u8, base, cache) = resolve_live_m3u8(&client, &slug).await.unwrap();
+        println!("M3U8: {}", m3u8);
+        println!("Base: {}", base);
+        println!("Cache: {}", cache);
+        assert!(m3u8.contains("#EXTM3U"));
+    }
+
+    #[test]
+    fn test_domain_cache_expiration_and_clear() {
+        clear_poo_domain_cache();
+        assert!(get_cached_poo_domain().is_none());
+
+        POO_DOMAIN_CACHE.get_or_init(DashMap::new).insert(
+            "domain".to_owned(),
+            ("expired.com".to_owned(), now_secs() - 10),
+        );
+        assert!(get_cached_poo_domain().is_none());
+
+        POO_DOMAIN_CACHE.get_or_init(DashMap::new).insert(
+            "domain".to_owned(),
+            ("valid.com".to_owned(), now_secs() + 60),
+        );
+        assert_eq!(get_cached_poo_domain(), Some("valid.com".to_owned()));
+
+        clear_poo_domain_cache();
+        assert!(get_cached_poo_domain().is_none());
+    }
 }
+
