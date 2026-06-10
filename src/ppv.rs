@@ -13,12 +13,26 @@ pub const PPV_STATUS_PATH: &str = "/ppv/status";
 pub const PPV_PLAY_PATH_PREFIX: &str = "/ppv/play";
 
 const PPV_STREAMS: &str = "https://api.ppv.to/api/streams";
-const POO_FETCH: &str = "https://pooembed.eu/fetch";
-const POO_ORIGIN: &str = "https://pooembed.eu";
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
 const ROOM_TTL: u64 = 600;
 const SOURCE_TTL: u64 = 300;
 const TOKEN_MARGIN: u64 = 90;
+
+fn poo_domain() -> String {
+    std::env::var("TV_POO_DOMAIN")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "pooembed.top".to_owned())
+}
+
+fn poo_fetch_url() -> String {
+    format!("https://{}/fetch", poo_domain())
+}
+
+fn poo_origin() -> String {
+    format!("https://{}", poo_domain())
+}
 
 struct CachedRoom {
     slug: String,
@@ -351,10 +365,11 @@ fn m3u8_refs(text: &str, base: &str) -> Vec<M3u8Ref> {
 }
 
 async fn hls_get(client: &reqwest::Client, url: &str, slug: &str) -> anyhow::Result<String> {
-    let referer = format!("{}/embed/{}", POO_ORIGIN, urlencode(slug));
+    let origin = poo_origin();
+    let referer = format!("{}/embed/{}", origin, urlencode(slug));
     let text = client
         .get(url)
-        .header("Origin", POO_ORIGIN)
+        .header("Origin", origin)
         .header("Referer", referer)
         .header("Accept", "*/*")
         .header("User-Agent", BROWSER_UA)
@@ -471,12 +486,13 @@ pub async fn resolve_room_slug(client: &reqwest::Client, id: &str) -> anyhow::Re
 
 async fn fetch_fresh_url(client: &reqwest::Client, slug: &str) -> anyhow::Result<String> {
     let body = pb_put(1, slug);
-    let referer = format!("{}/embed/{}", POO_ORIGIN, urlencode(slug));
+    let origin = poo_origin();
+    let referer = format!("{}/embed/{}", origin, urlencode(slug));
 
     let resp = client
-        .post(POO_FETCH)
+        .post(poo_fetch_url())
         .header("Content-Type", "application/octet-stream")
-        .header("Origin", POO_ORIGIN)
+        .header("Origin", origin)
         .header("Referer", referer)
         .header("Accept", "*/*")
         .header("User-Agent", BROWSER_UA)
