@@ -20,7 +20,7 @@ const TOKEN_MARGIN: u64 = 90;
 
 static POO_DOMAIN_CACHE: OnceLock<DashMap<String, (String, u64)>> = OnceLock::new();
 static STREAMS_CACHE: OnceLock<DashMap<String, (Vec<u8>, u64)>> = OnceLock::new();
-const STREAMS_CACHE_TTL: u64 = 30;
+const STREAMS_CACHE_TTL: u64 = 120;
 
 fn get_cached_poo_domain() -> Option<String> {
     if let Some(entry) = POO_DOMAIN_CACHE.get_or_init(DashMap::new).get("domain") {
@@ -819,12 +819,43 @@ fn is_non_retryable(err: &anyhow::Error) -> bool {
         || msg.contains("short field")
 }
 
+/// Try serving from cached room + source without any external API
+/// calls.  Returns `None` when the room isn't cached or the source
+/// cache miss needs a fresh URL.
+async fn try_cached_ppv_play(
+    client: &reqwest::Client,
+    id: &str,
+) -> Option<anyhow::Result<(String, &'static str)>> {
+    let cached = room_cache().get(id.trim())?;
+    if cached.expires_at <= now_secs() {
+        return None;
+    }
+    let slug = cached.slug.clone();
+    let domain = cached.domain.clone();
+    match resolve_live_m3u8(client, &slug, &domain).await {
+        Ok((m3u8, base, cache_status)) => {
+            Some(Ok((abs_m3u8(&m3u8, &base), cache_status)))
+        }
+        Err(err) => {
+            if is_non_retryable(&err) {
+                return Some(Err(err));
+            }
+            // Source cache expired or 403 — caller will do full
+            // resolution with fresh API data.
+            None
+        }
+    }
+}
+
 pub async fn ppv_hls_playlist(id: &str) -> anyhow::Result<(String, &'static str)> {
     let client = get_client();
 
-    // Single PPV streams fetch that serves both domain-freshness and
-    // room resolution, avoiding the old double-fetch in the normal
-    // path.
+    // Fast path: both room and source are cached — zero API calls.
+    if let Some(result) = try_cached_ppv_play(&client, id).await {
+        return result;
+    }
+
+    // Slow path: fetch the catalog and resolve the room.
     let streams_resp = fetch_ppv_streams_json(&client).await?;
     extract_and_cache_poo_domain(&streams_resp);
     let (slug, domain) = resolve_room_from_streams(id, &streams_resp)?;
