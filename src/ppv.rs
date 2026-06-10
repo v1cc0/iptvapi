@@ -662,14 +662,16 @@ pub async fn resolve_live_m3u8(
 /// today (local timezone).  Slugs without a recognisable date are always
 /// included.
 fn is_today(slug: &str, today: chrono::NaiveDate) -> bool {
-    let parts: Vec<&str> = slug.split('/').collect();
-    if parts.len() < 2 {
-        return true; // no date segment -> always include
+    // Scan all segments for a YYYY-MM-DD date; if any segment is a date
+    // and it is NOT today, exclude the slug.  If no segment is a
+    // recognisable date, include it.
+    for part in slug.split('/') {
+        match chrono::NaiveDate::parse_from_str(part, "%Y-%m-%d") {
+            Ok(date) => return date == today,
+            Err(_) => continue,
+        }
     }
-    match chrono::NaiveDate::parse_from_str(parts[1], "%Y-%m-%d") {
-        Ok(date) => date == today,
-        Err(_) => true, // not a date -> always include
-    }
+    true // no date segment found -> always include
 }
 
 pub async fn generate_ppv_playlist_m3u(
@@ -915,9 +917,28 @@ mod tests {
     #[test]
     fn test_is_today_multi_segment_no_date() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
-        // second segment is not a date
+        // no YYYY-MM-DD anywhere -> always include
         assert!(is_today("fia-wec/2026/lemans/fp2", today));
         assert!(is_today("nba/playoffs/game7", today));
         assert!(is_today("soccer/friendly/bra-arg", today));
+    }
+
+    #[test]
+    fn test_is_today_date_in_third_segment() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        // date in third segment (wrestling-style slugs)
+        assert!(is_today("aew/dynamite/2026-06-11", today));
+        assert!(is_today("wwe/raw/2026-06-11", today));
+        assert!(!is_today("aew/dynamite/2026-06-10", today));
+        assert!(!is_today("wwe/smackdown/2026-06-12", today));
+        assert!(!is_today("aew/collision/2026-06-13", today));
+    }
+
+    #[test]
+    fn test_is_today_date_in_fourth_segment() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        // date in fourth segment
+        assert!(is_today("league/season/round/2026-06-11", today));
+        assert!(!is_today("league/season/round/2026-06-10", today));
     }
 }
