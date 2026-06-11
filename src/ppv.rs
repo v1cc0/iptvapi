@@ -833,9 +833,7 @@ async fn try_cached_ppv_play(
     let slug = cached.slug.clone();
     let domain = cached.domain.clone();
     match resolve_live_m3u8(client, &slug, &domain).await {
-        Ok((m3u8, base, cache_status)) => {
-            Some(Ok((abs_m3u8(&m3u8, &base), cache_status)))
-        }
+        Ok((m3u8, base, cache_status)) => Some(Ok((abs_m3u8(&m3u8, &base), cache_status))),
         Err(err) => {
             if is_non_retryable(&err) {
                 return Some(Err(err));
@@ -1117,48 +1115,38 @@ mod tests {
     #[test]
     fn test_is_non_retryable() {
         // CDN returning non-HLS content — domain rotation won't fix
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("not m3u8")
-        ));
+        assert!(is_non_retryable(&anyhow::anyhow!("not m3u8")));
         // internal consistency errors
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("m3u8 loop")
-        ));
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("m3u8 too deep")
-        ));
+        assert!(is_non_retryable(&anyhow::anyhow!("m3u8 loop")));
+        assert!(is_non_retryable(&anyhow::anyhow!("m3u8 too deep")));
         // PPV API payload errors
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("no island header in fetch response")
-        ));
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("base64 decode failed: ...")
-        ));
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("chacha20poly1305 decryption failed: ...")
-        ));
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("bad payload length")
-        ));
-        assert!(is_non_retryable(
-            &anyhow::anyhow!("field 1 not found")
-        ));
+        assert!(is_non_retryable(&anyhow::anyhow!(
+            "no island header in fetch response"
+        )));
+        assert!(is_non_retryable(&anyhow::anyhow!(
+            "base64 decode failed: ..."
+        )));
+        assert!(is_non_retryable(&anyhow::anyhow!(
+            "chacha20poly1305 decryption failed: ..."
+        )));
+        assert!(is_non_retryable(&anyhow::anyhow!("bad payload length")));
+        assert!(is_non_retryable(&anyhow::anyhow!("field 1 not found")));
     }
 
     #[test]
     fn test_is_retryable() {
         // Network / HTTP errors — domain rotation MIGHT help
-        assert!(!is_non_retryable(
-            &anyhow::anyhow!("HTTP status client error (403 Forbidden)")
-        ));
-        assert!(!is_non_retryable(
-            &anyhow::anyhow!("HTTP status server error (502 Bad Gateway)")
-        ));
-        assert!(!is_non_retryable(
-            &anyhow::anyhow!("error sending request for url: connection error: timeout")
-        ));
-        assert!(!is_non_retryable(
-            &anyhow::anyhow!("connection closed before message completed")
-        ));
+        assert!(!is_non_retryable(&anyhow::anyhow!(
+            "HTTP status client error (403 Forbidden)"
+        )));
+        assert!(!is_non_retryable(&anyhow::anyhow!(
+            "HTTP status server error (502 Bad Gateway)"
+        )));
+        assert!(!is_non_retryable(&anyhow::anyhow!(
+            "error sending request for url: connection error: timeout"
+        )));
+        assert!(!is_non_retryable(&anyhow::anyhow!(
+            "connection closed before message completed"
+        )));
     }
 }

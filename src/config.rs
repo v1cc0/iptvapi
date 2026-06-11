@@ -649,7 +649,11 @@ fn ensure_file_exists(path_str: &str, default_content: &str) -> Result<()> {
                         if let Ok(content) = fs::read_to_string(&fallback_path) {
                             fs::write(path, content)
                                 .with_context(|| format!("Failed to migrate file to {:?}", path))?;
-                            tracing::info!("Migrated/copied file from {:?} to {:?}", fallback_path, path);
+                            tracing::info!(
+                                "Migrated/copied file from {:?} to {:?}",
+                                fallback_path,
+                                path
+                            );
                             migrated = true;
                         }
                     }
@@ -1232,31 +1236,69 @@ source_type = "txt"
         let path = dir.path().join("config.toml");
         create_default_config(&path).unwrap();
         let mut config = load_config(&path).unwrap();
-        
+
         // 1. Prepare an existing file in the grandparent dir (e.g. dir/whitelist.txt)
         let grandparent_file = dir.path().join("whitelist.txt");
         let test_content = "CCTV-1,http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
         fs::write(&grandparent_file, test_content).unwrap();
 
         // 2. Adjust paths to point to dir/config/
-        config.filter.whitelist_path = dir.path().join("config/whitelist.txt").to_string_lossy().to_string();
-        config.filter.blacklist_path = dir.path().join("config/blacklist.txt").to_string_lossy().to_string();
-        config.subscribe.sources_path = dir.path().join("config/subscribe.txt").to_string_lossy().to_string();
-        config.subscribe.alias_path = dir.path().join("config/alias_path_sub.txt").to_string_lossy().to_string();
-        config.epg.sources_path = dir.path().join("config/epg.txt").to_string_lossy().to_string();
-        config.epg.alias_path = dir.path().join("config/alias_path_epg.txt").to_string_lossy().to_string();
-        config.local.file_path = dir.path().join("config/local.txt").to_string_lossy().to_string();
-        config.local.dir_path = dir.path().join("config/local").to_string_lossy().to_string();
+        config.filter.whitelist_path = dir
+            .path()
+            .join("config/whitelist.txt")
+            .to_string_lossy()
+            .to_string();
+        config.filter.blacklist_path = dir
+            .path()
+            .join("config/blacklist.txt")
+            .to_string_lossy()
+            .to_string();
+        config.subscribe.sources_path = dir
+            .path()
+            .join("config/subscribe.txt")
+            .to_string_lossy()
+            .to_string();
+        config.subscribe.alias_path = dir
+            .path()
+            .join("config/alias_path_sub.txt")
+            .to_string_lossy()
+            .to_string();
+        config.epg.sources_path = dir
+            .path()
+            .join("config/epg.txt")
+            .to_string_lossy()
+            .to_string();
+        config.epg.alias_path = dir
+            .path()
+            .join("config/alias_path_epg.txt")
+            .to_string_lossy()
+            .to_string();
+        config.local.file_path = dir
+            .path()
+            .join("config/local.txt")
+            .to_string_lossy()
+            .to_string();
+        config.local.dir_path = dir
+            .path()
+            .join("config/local")
+            .to_string_lossy()
+            .to_string();
         config.local.hls_dir_path = dir.path().join("config/hls").to_string_lossy().to_string();
-        config.local.hls_temp_path = dir.path().join("config/hls_temp").to_string_lossy().to_string();
+        config.local.hls_temp_path = dir
+            .path()
+            .join("config/hls_temp")
+            .to_string_lossy()
+            .to_string();
         config.output.logo_dir = dir.path().join("config/logo").to_string_lossy().to_string();
-        config.sources = vec![
-            crate::models::SourceConfig {
-                name: "Demo".to_string(),
-                url: dir.path().join("config/demo.txt").to_string_lossy().to_string(),
-                source_type: crate::models::SourceType::Txt,
-            }
-        ];
+        config.sources = vec![crate::models::SourceConfig {
+            name: "Demo".to_string(),
+            url: dir
+                .path()
+                .join("config/demo.txt")
+                .to_string_lossy()
+                .to_string(),
+            source_type: crate::models::SourceType::Txt,
+        }];
 
         // 3. Run ensure_config_files
         ensure_config_files(&config).unwrap();
@@ -1264,7 +1306,10 @@ source_type = "txt"
         // 4. Verify migrated file
         let migrated_whitelist = Path::new(&config.filter.whitelist_path);
         assert!(migrated_whitelist.exists());
-        assert_eq!(fs::read_to_string(migrated_whitelist).unwrap(), test_content);
+        assert_eq!(
+            fs::read_to_string(migrated_whitelist).unwrap(),
+            test_content
+        );
 
         // 5. Verify default files created
         let blacklist_file = Path::new(&config.filter.blacklist_path);

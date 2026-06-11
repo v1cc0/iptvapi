@@ -16,6 +16,7 @@ node_modules/
 config.toml
 .cargo-remote.toml
 output/
+config/
 
 # agent files
 AGENTS.md

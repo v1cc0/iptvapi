@@ -71,25 +71,32 @@ struct MixListRoom {
     rn: String, // Room name/title
     nn: String, // Nickname/anchor name
     #[allow(dead_code)]
-    ol: u64,    // Online heat
+    ol: u64, // Online heat
     rs16: Option<String>, // Room cover image
 }
 
 async fn fetch_rooms_upstream(cate_id: &str) -> anyhow::Result<Vec<MixListRoom>> {
     let client = get_client();
-    let url = format!("https://www.douyu.com/gapi/rkc/directory/mixList/{}/1", cate_id);
+    let url = format!(
+        "https://www.douyu.com/gapi/rkc/directory/mixList/{}/1",
+        cate_id
+    );
     let res = client
         .get(&url)
         .header(USER_AGENT, USER_AGENT_VAL)
         .send()
         .await
         .context(format!("failed to fetch douyu room list for {}", cate_id))?;
-    let mix_list: MixListResponse = res
-        .json()
-        .await
-        .context(format!("failed to parse douyu room list JSON for {}", cate_id))?;
+    let mix_list: MixListResponse = res.json().await.context(format!(
+        "failed to parse douyu room list JSON for {}",
+        cate_id
+    ))?;
     if mix_list.code != 0 || mix_list.data.is_none() {
-        anyhow::bail!("douyu room list for {} returned error code {}", cate_id, mix_list.code);
+        anyhow::bail!(
+            "douyu room list for {} returned error code {}",
+            cate_id,
+            mix_list.code
+        );
     }
     Ok(mix_list.data.unwrap().rl)
 }
@@ -123,7 +130,7 @@ pub async fn generate_douyu_playlist_m3u(
     };
 
     let mut m3u = String::from("#EXTM3U\n");
-    
+
     for room in rooms {
         let logo = room.rs16.unwrap_or_default();
         let logo_attr = if !logo.is_empty() {
@@ -131,13 +138,13 @@ pub async fn generate_douyu_playlist_m3u(
         } else {
             String::new()
         };
-        
+
         m3u.push_str(&format!(
             "#EXTINF:-1 tvg-id=\"douyu-{}\" tvg-name=\"{}\"{} group-title=\"{}\", {} - {}\n{}/douyu/play/{}\n",
             room.rid, room.nn, logo_attr, group_title, room.nn, room.rn, base_url, room.rid
         ));
     }
-    
+
     Ok(m3u)
 }
 
@@ -201,9 +208,8 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
 
     // Extract final room id using regex
     static RE_FINAL_ID: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE_FINAL_ID.get_or_init(|| {
-        regex::Regex::new(r"getLegacyFirstStream\(\{\s*roomID:\s*(\d+)").unwrap()
-    });
+    let re = RE_FINAL_ID
+        .get_or_init(|| regex::Regex::new(r"getLegacyFirstStream\(\{\s*roomID:\s*(\d+)").unwrap());
     let final_room_id = re
         .captures(&html)
         .and_then(|caps| caps.get(1))
@@ -273,7 +279,10 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
     auth = compute_md5(&format!("{}{}{}", auth, enc_data.key, sign_str));
 
     // 5. Post to getH5PlayV1 to get rtmp details
-    let play_url = format!("https://www.douyu.com/lapi/live/getH5PlayV1/{}", final_room_id);
+    let play_url = format!(
+        "https://www.douyu.com/lapi/live/getH5PlayV1/{}",
+        final_room_id
+    );
     let form = [
         ("enc_data", enc_data.enc_data),
         ("tt", ts.to_string()),
@@ -350,7 +359,12 @@ mod tests {
         let res = resolve_douyu_play_url(9999).await;
         match res {
             Ok(url) => {
-                assert!(url.contains("douyucdn") || url.contains("douyuscdn") || url.contains(".m3u8") || url.contains(".flv"));
+                assert!(
+                    url.contains("douyucdn")
+                        || url.contains("douyuscdn")
+                        || url.contains(".m3u8")
+                        || url.contains(".flv")
+                );
             }
             Err(e) => {
                 println!("test_resolve_douyu_play_url got error: {:?}", e);
@@ -358,4 +372,3 @@ mod tests {
         }
     }
 }
-
