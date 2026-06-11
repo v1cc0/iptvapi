@@ -30,7 +30,78 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AppConfig> {
     apply_python_setting_aliases(&mut config);
     apply_env_overrides(&mut config);
     apply_python_setting_aliases(&mut config);
+    resolve_tilde_paths(&mut config);
     Ok(config)
+}
+
+fn expand_tilde(s: &str) -> String {
+    if s.starts_with('~') {
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+            let home = home.to_string_lossy();
+            let suffix = &s[1..];
+            if suffix.is_empty() {
+                home.into_owned()
+            } else if suffix.starts_with('/') {
+                format!("{}{}", home, suffix)
+            } else {
+                format!("{}/{}", home, suffix)
+            }
+        } else {
+            s.to_owned()
+        }
+    } else {
+        s.to_owned()
+    }
+}
+
+fn resolve_tilde_paths(config: &mut AppConfig) {
+    config.filter.whitelist_path = expand_tilde(&config.filter.whitelist_path);
+    config.filter.blacklist_path = expand_tilde(&config.filter.blacklist_path);
+    config.filter.ipdb_path = expand_tilde(&config.filter.ipdb_path);
+
+    config.subscribe.sources_path = expand_tilde(&config.subscribe.sources_path);
+    config.subscribe.alias_path = expand_tilde(&config.subscribe.alias_path);
+    config.subscribe.nomatch_log_path = expand_tilde(&config.subscribe.nomatch_log_path);
+
+    config.epg.sources_path = expand_tilde(&config.epg.sources_path);
+    config.epg.output_xml_path = expand_tilde(&config.epg.output_xml_path);
+    config.epg.output_gz_path = expand_tilde(&config.epg.output_gz_path);
+    config.epg.alias_path = expand_tilde(&config.epg.alias_path);
+
+    config.local.file_path = expand_tilde(&config.local.file_path);
+    config.local.dir_path = expand_tilde(&config.local.dir_path);
+    config.local.hls_dir_path = expand_tilde(&config.local.hls_dir_path);
+    config.local.hls_temp_path = expand_tilde(&config.local.hls_temp_path);
+    config.local.nginx_dir_path = expand_tilde(&config.local.nginx_dir_path);
+
+    config.output.result_txt_path = expand_tilde(&config.output.result_txt_path);
+    config.output.result_m3u_path = expand_tilde(&config.output.result_m3u_path);
+    config.output.ipv4_result_txt_path = expand_tilde(&config.output.ipv4_result_txt_path);
+    config.output.ipv4_result_m3u_path = expand_tilde(&config.output.ipv4_result_m3u_path);
+    config.output.ipv6_result_txt_path = expand_tilde(&config.output.ipv6_result_txt_path);
+    config.output.ipv6_result_m3u_path = expand_tilde(&config.output.ipv6_result_m3u_path);
+    config.output.hls_result_txt_path = expand_tilde(&config.output.hls_result_txt_path);
+    config.output.hls_result_m3u_path = expand_tilde(&config.output.hls_result_m3u_path);
+    config.output.hls_ipv4_result_txt_path = expand_tilde(&config.output.hls_ipv4_result_txt_path);
+    config.output.hls_ipv4_result_m3u_path = expand_tilde(&config.output.hls_ipv4_result_m3u_path);
+    config.output.hls_ipv6_result_txt_path = expand_tilde(&config.output.hls_ipv6_result_txt_path);
+    config.output.hls_ipv6_result_m3u_path = expand_tilde(&config.output.hls_ipv6_result_m3u_path);
+    config.output.rtmp_data_path = expand_tilde(&config.output.rtmp_data_path);
+    config.output.logo_dir = expand_tilde(&config.output.logo_dir);
+    config.output.result_log_path = expand_tilde(&config.output.result_log_path);
+    config.output.speed_test_log_path = expand_tilde(&config.output.speed_test_log_path);
+    config.output.statistic_log_path = expand_tilde(&config.output.statistic_log_path);
+    config.output.cache_path = expand_tilde(&config.output.cache_path);
+    config.output.frozen_path = expand_tilde(&config.output.frozen_path);
+
+    for source in &mut config.sources {
+        if source.url.starts_with("file://") {
+            let file_path = &source.url[7..];
+            source.url = format!("file://{}", expand_tilde(file_path));
+        } else {
+            source.url = expand_tilde(&source.url);
+        }
+    }
 }
 
 fn apply_python_setting_aliases(config: &mut AppConfig) {

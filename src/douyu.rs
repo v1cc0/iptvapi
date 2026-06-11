@@ -41,6 +41,19 @@ fn compute_md5(text: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[derive(Clone, Debug)]
+struct CachedRooms {
+    fetched_at: Instant,
+    rooms: Vec<MixListRoom>,
+}
+
+static ROOMS_CACHE: OnceLock<Mutex<Option<CachedRooms>>> = OnceLock::new();
+const CACHE_TTL_ROOMS: Duration = Duration::from_secs(30);
+
+fn rooms_cache() -> &'static Mutex<Option<CachedRooms>> {
+    ROOMS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
 #[derive(Deserialize)]
 struct MixListResponse {
     code: i32,
@@ -52,7 +65,7 @@ struct MixListData {
     rl: Vec<MixListRoom>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug)]
 struct MixListRoom {
     rid: u64,
     rn: String, // Room name/title
@@ -62,33 +75,54 @@ struct MixListRoom {
     rs16: Option<String>, // Room cover image
 }
 
-/// Fetches active DOTA2 rooms and returns them as M3U playlist format.
-pub async fn generate_douyu_playlist_m3u(base_url: &str) -> anyhow::Result<String> {
+async fn fetch_rooms_upstream() -> anyhow::Result<Vec<MixListRoom>> {
     let client = get_client();
     let url = "https://www.douyu.com/gapi/rkc/directory/mixList/2_3/1";
-    
     let res = client
         .get(url)
         .header(USER_AGENT, USER_AGENT_VAL)
         .send()
         .await
         .context("failed to fetch douyu DOTA2 room list")?;
-        
     let mix_list: MixListResponse = res
         .json()
         .await
         .context("failed to parse douyu DOTA2 room list JSON")?;
-        
     if mix_list.code != 0 || mix_list.data.is_none() {
         anyhow::bail!("douyu room list returned error code {}", mix_list.code);
     }
-    
-    let rooms = mix_list.data.unwrap().rl;
+    Ok(mix_list.data.unwrap().rl)
+}
+
+/// Fetches active DOTA2 rooms and returns them as M3U playlist format (with 30s caching).
+pub async fn generate_douyu_playlist_m3u(base_url: &str) -> anyhow::Result<String> {
+    let rooms = {
+        let mut cache = rooms_cache().lock().await;
+        if let Some(cached) = &*cache {
+            if cached.fetched_at.elapsed() < CACHE_TTL_ROOMS {
+                cached.rooms.clone()
+            } else {
+                let fresh = fetch_rooms_upstream().await?;
+                *cache = Some(CachedRooms {
+                    fetched_at: Instant::now(),
+                    rooms: fresh.clone(),
+                });
+                fresh
+            }
+        } else {
+            let fresh = fetch_rooms_upstream().await?;
+            *cache = Some(CachedRooms {
+                fetched_at: Instant::now(),
+                rooms: fresh.clone(),
+            });
+            fresh
+        }
+    };
+
     let mut m3u = String::from("#EXTM3U\n");
     
     for room in rooms {
         let logo = room.rs16.unwrap_or_default();
-        // Escape special chars in M3U attributes if needed, but anchor/title are fine
         let logo_attr = if !logo.is_empty() {
             format!(" tvg-logo=\"{}\"", logo)
         } else {

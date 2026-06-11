@@ -32,63 +32,63 @@ ipv6_support = true
 ipv_type = "all"
 
 [filter]
-whitelist_path = "/config/whitelist.txt"
-blacklist_path = "/config/blacklist.txt"
+whitelist_path = "~/.iptvapi/config/whitelist.txt"
+blacklist_path = "~/.iptvapi/config/blacklist.txt"
 location = []
 isp = []
-ipdb_path = "/utils/ip_checker/data/qqwry.ipdb"
+ipdb_path = "~/.iptvapi/utils/ip_checker/data/qqwry.ipdb"
 
 [subscribe]
 enabled = true
-sources_path = "/config/subscribe.txt"
+sources_path = "~/.iptvapi/config/subscribe.txt"
 timeout_ms = 30000
 concurrency = 10
 cdn_url = ""
 http_proxy = ""
-alias_path = "/config/alias.txt"
-nomatch_log_path = "/output/log/nomatch.log"
+alias_path = "~/.iptvapi/config/alias.txt"
+nomatch_log_path = "~/.iptvapi/output/log/nomatch.log"
 
 [epg]
 enabled = true
-sources_path = "/config/epg.txt"
-output_xml_path = "/output/epg/epg.xml"
-output_gz_path = "/output/epg/epg.gz"
+sources_path = "~/.iptvapi/config/epg.txt"
+output_xml_path = "~/.iptvapi/output/epg/epg.xml"
+output_gz_path = "~/.iptvapi/output/epg/epg.gz"
 timeout_ms = 30000
 concurrency = 10
 cdn_url = ""
 http_proxy = ""
-alias_path = "/config/alias.txt"
+alias_path = "~/.iptvapi/config/alias.txt"
 
 [local]
 enabled = true
-file_path = "/config/local.txt"
-dir_path = "/config/local"
+file_path = "~/.iptvapi/config/local.txt"
+dir_path = "~/.iptvapi/config/local"
 match_aliases = true
 hls_enabled = false
-hls_dir_path = "/config/hls"
-hls_temp_path = "/tmp/hls"
-nginx_dir_path = "/utils/nginx-rtmp-win32"
+hls_dir_path = "~/.iptvapi/config/hls"
+hls_temp_path = "~/.iptvapi/tmp/hls"
+nginx_dir_path = "~/.iptvapi/utils/nginx-rtmp-win32"
 nginx_http_port = 8080
 nginx_rtmp_port = 1935
 rtmp_idle_timeout = 300
 rtmp_max_streams = 10
 
 [output]
-result_txt_path = "/output/result.txt"
-result_m3u_path = "/output/result.m3u"
+result_txt_path = "~/.iptvapi/output/result.txt"
+result_m3u_path = "~/.iptvapi/output/result.m3u"
 m3u_result_enabled = true
-ipv4_result_txt_path = "/output/ipv4/result.txt"
-ipv4_result_m3u_path = "/output/ipv4/result.m3u"
-ipv6_result_txt_path = "/output/ipv6/result.txt"
-ipv6_result_m3u_path = "/output/ipv6/result.m3u"
-hls_result_txt_path = "/output/hls.txt"
-hls_result_m3u_path = "/output/hls.m3u"
-hls_ipv4_result_txt_path = "/output/ipv4/hls.txt"
-hls_ipv4_result_m3u_path = "/output/ipv4/hls.m3u"
-hls_ipv6_result_txt_path = "/output/ipv6/hls.txt"
-hls_ipv6_result_m3u_path = "/output/ipv6/hls.m3u"
-rtmp_data_path = "../output/data/rtmp.db"
-logo_dir = "../config/logo"
+ipv4_result_txt_path = "~/.iptvapi/output/ipv4/result.txt"
+ipv4_result_m3u_path = "~/.iptvapi/output/ipv4/result.m3u"
+ipv6_result_txt_path = "~/.iptvapi/output/ipv6/result.txt"
+ipv6_result_m3u_path = "~/.iptvapi/output/ipv6/result.m3u"
+hls_result_txt_path = "~/.iptvapi/output/hls.txt"
+hls_result_m3u_path = "~/.iptvapi/output/hls.m3u"
+hls_ipv4_result_txt_path = "~/.iptvapi/output/ipv4/hls.txt"
+hls_ipv4_result_m3u_path = "~/.iptvapi/output/ipv4/hls.m3u"
+hls_ipv6_result_txt_path = "~/.iptvapi/output/ipv6/hls.txt"
+hls_ipv6_result_m3u_path = "~/.iptvapi/output/ipv6/hls.m3u"
+rtmp_data_path = "~/.iptvapi/output/data/rtmp.db"
+logo_dir = "~/.iptvapi/config/logo"
 logo_url = ""
 logo_type = "png"
 public_base_url = ""
@@ -100,9 +100,9 @@ subscribe_num = 10
 recent_days = 30
 origin_type_prefer = []
 ipv_type_prefer = []
-result_log_path = "/output/log/result.log"
-speed_test_log_path = "/output/log/speed_test.log"
-statistic_log_path = "/output/log/statistic.log"
+result_log_path = "~/.iptvapi/output/log/result.log"
+speed_test_log_path = "~/.iptvapi/output/log/speed_test.log"
+statistic_log_path = "~/.iptvapi/output/log/statistic.log"
 update_time_enabled = true
 update_time_position = "top"
 time_zone = "Asia/Shanghai"
@@ -114,10 +114,10 @@ open_history = true
 open_use_cache = true
 open_request = false
 open_realtime_write = true
-cache_path = "/output/data/cache.gz"
-frozen_path = "/output/data/frozen.gz"
+cache_path = "~/.iptvapi/output/data/cache.gz"
+frozen_path = "~/.iptvapi/output/data/frozen.gz"
 
 [[sources]]
 name = "Demo Source"
-url = "/config/demo.txt"
+url = "~/.iptvapi/config/demo.txt"
 source_type = "txt"
