@@ -17,6 +17,7 @@ reqwest = { version = "0.13.3", default-features = false, features = [
   "rustls",
   "stream",
   "cookies",
+  "form",
 ] }
 
 # Serialization & Deserialization
@@ -56,6 +57,7 @@ flate2 = "1.1.9"
 serde-pickle = "1.2.0"
 ipdb = "0.1.4"
 rusqlite = { version = "0.40.0", features = ["bundled"] }
+md-5 = { version = "0.10.6", default-features = false }
 
 [profile.release]
 opt-level = "z"

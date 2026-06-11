@@ -11,6 +11,7 @@ mod playlist;
 mod ppv;
 mod subscribe;
 mod telemetry;
+mod douyu;
 
 use crate::engine::{Engine, EngineStatus};
 use crate::models::{Channel, LocalConfig, OutputConfig};
@@ -168,6 +169,8 @@ async fn main() -> anyhow::Result<()> {
         .route(ppv::PPV_STATUS_PATH, get(get_ppv_status))
         .route("/ppv/status.json", get(get_ppv_status_json))
         .route("/ppv/play/{*id}", get(get_ppv_play_hls))
+        .route("/douyu.m3u", get(get_douyu_playlist_m3u))
+        .route("/douyu/play/{room_id}", get(get_douyu_play_hls))
         .route("/status", get(get_status))
         .route("/engine/status", get(get_engine_status))
         .route("/metrics", get(get_metrics))
@@ -989,6 +992,50 @@ async fn get_ppv_play_hls(Path(id): Path<String>) -> impl IntoResponse {
             .await;
             tracing::warn!("Failed to resolve PPV channel {id}: {error:#}");
             (StatusCode::NOT_FOUND, "PPV channel unavailable").into_response()
+        }
+    }
+}
+
+async fn get_douyu_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
+    match douyu::generate_douyu_playlist_m3u(&request_base_url(&headers)).await {
+        Ok(playlist) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/vnd.apple.mpegurl",
+                ),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            playlist,
+        )
+            .into_response(),
+        Err(error) => {
+            crate::error_log::push(
+                "douyu",
+                format!("failed to generate douyu playlist: {error:#}"),
+            )
+            .await;
+            tracing::warn!("Failed to generate Douyu playlist: {error:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Douyu playlist generation failed",
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_douyu_play_hls(Path(room_id): Path<u64>) -> impl IntoResponse {
+    match douyu::resolve_douyu_play_url(room_id).await {
+        Ok(url) => axum::response::Redirect::temporary(&url).into_response(),
+        Err(error) => {
+            crate::error_log::push(
+                "douyu",
+                format!("failed to resolve douyu room {room_id}: {error:#}"),
+            )
+            .await;
+            tracing::warn!("Failed to resolve Douyu room {room_id}: {error:#}");
+            (StatusCode::NOT_FOUND, "Douyu room unavailable").into_response()
         }
     }
 }
