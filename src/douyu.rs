@@ -47,11 +47,11 @@ struct CachedRooms {
     rooms: Vec<MixListRoom>,
 }
 
-static ROOMS_CACHE: OnceLock<Mutex<Option<CachedRooms>>> = OnceLock::new();
+static ROOMS_CACHE: OnceLock<Mutex<HashMap<String, CachedRooms>>> = OnceLock::new();
 const CACHE_TTL_ROOMS: Duration = Duration::from_secs(30);
 
-fn rooms_cache() -> &'static Mutex<Option<CachedRooms>> {
-    ROOMS_CACHE.get_or_init(|| Mutex::new(None))
+fn rooms_cache() -> &'static Mutex<HashMap<String, CachedRooms>> {
+    ROOMS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Deserialize)]
@@ -75,47 +75,50 @@ struct MixListRoom {
     rs16: Option<String>, // Room cover image
 }
 
-async fn fetch_rooms_upstream() -> anyhow::Result<Vec<MixListRoom>> {
+async fn fetch_rooms_upstream(cate_id: &str) -> anyhow::Result<Vec<MixListRoom>> {
     let client = get_client();
-    let url = "https://www.douyu.com/gapi/rkc/directory/mixList/2_3/1";
+    let url = format!("https://www.douyu.com/gapi/rkc/directory/mixList/{}/1", cate_id);
     let res = client
-        .get(url)
+        .get(&url)
         .header(USER_AGENT, USER_AGENT_VAL)
         .send()
         .await
-        .context("failed to fetch douyu DOTA2 room list")?;
+        .context(format!("failed to fetch douyu room list for {}", cate_id))?;
     let mix_list: MixListResponse = res
         .json()
         .await
-        .context("failed to parse douyu DOTA2 room list JSON")?;
+        .context(format!("failed to parse douyu room list JSON for {}", cate_id))?;
     if mix_list.code != 0 || mix_list.data.is_none() {
-        anyhow::bail!("douyu room list returned error code {}", mix_list.code);
+        anyhow::bail!("douyu room list for {} returned error code {}", cate_id, mix_list.code);
     }
     Ok(mix_list.data.unwrap().rl)
 }
 
-/// Fetches active DOTA2 rooms and returns them as M3U playlist format (with 30s caching).
-pub async fn generate_douyu_playlist_m3u(base_url: &str) -> anyhow::Result<String> {
+/// Fetches active rooms for a given category and returns them as M3U playlist format (with 30s caching).
+pub async fn generate_douyu_playlist_m3u(
+    cate_id: &str,
+    group_title: &str,
+    base_url: &str,
+) -> anyhow::Result<String> {
     let rooms = {
         let mut cache = rooms_cache().lock().await;
-        if let Some(cached) = &*cache {
-            if cached.fetched_at.elapsed() < CACHE_TTL_ROOMS {
-                cached.rooms.clone()
-            } else {
-                let fresh = fetch_rooms_upstream().await?;
-                *cache = Some(CachedRooms {
-                    fetched_at: Instant::now(),
+        let now = Instant::now();
+        let needs_fetch = match cache.get(cate_id) {
+            Some(cached) => cached.fetched_at.elapsed() >= CACHE_TTL_ROOMS,
+            None => true,
+        };
+        if needs_fetch {
+            let fresh = fetch_rooms_upstream(cate_id).await?;
+            cache.insert(
+                cate_id.to_string(),
+                CachedRooms {
+                    fetched_at: now,
                     rooms: fresh.clone(),
-                });
-                fresh
-            }
-        } else {
-            let fresh = fetch_rooms_upstream().await?;
-            *cache = Some(CachedRooms {
-                fetched_at: Instant::now(),
-                rooms: fresh.clone(),
-            });
+                },
+            );
             fresh
+        } else {
+            cache.get(cate_id).unwrap().rooms.clone()
         }
     };
 
@@ -130,8 +133,8 @@ pub async fn generate_douyu_playlist_m3u(base_url: &str) -> anyhow::Result<Strin
         };
         
         m3u.push_str(&format!(
-            "#EXTINF:-1 tvg-id=\"douyu-{}\" tvg-name=\"{}\"{} group-title=\"斗鱼DOTA2\", {} - {}\n{}/douyu/play/{}\n",
-            room.rid, room.nn, logo_attr, room.nn, room.rn, base_url, room.rid
+            "#EXTINF:-1 tvg-id=\"douyu-{}\" tvg-name=\"{}\"{} group-title=\"{}\", {} - {}\n{}/douyu/play/{}\n",
+            room.rid, room.nn, logo_attr, group_title, room.nn, room.rn, base_url, room.rid
         ));
     }
     
@@ -328,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_douyu_playlist_m3u() {
-        let res = generate_douyu_playlist_m3u("http://localhost:12345").await;
+        let res = generate_douyu_playlist_m3u("2_3", "斗鱼DOTA2", "http://localhost:12345").await;
         match res {
             Ok(playlist) => {
                 assert!(playlist.starts_with("#EXTM3U"));

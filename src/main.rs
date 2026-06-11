@@ -169,7 +169,8 @@ async fn main() -> anyhow::Result<()> {
         .route(ppv::PPV_STATUS_PATH, get(get_ppv_status))
         .route("/ppv/status.json", get(get_ppv_status_json))
         .route("/ppv/play/{*id}", get(get_ppv_play_hls))
-        .route("/douyu.m3u", get(get_douyu_playlist_m3u))
+        .route("/dota.m3u", get(get_dota_playlist_m3u))
+        .route("/cs.m3u", get(get_cs_playlist_m3u))
         .route("/douyu/play/{room_id}", get(get_douyu_play_hls))
         .route("/status", get(get_status))
         .route("/engine/status", get(get_engine_status))
@@ -996,8 +997,8 @@ async fn get_ppv_play_hls(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn get_douyu_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
-    match douyu::generate_douyu_playlist_m3u(&request_base_url(&headers)).await {
+async fn get_dota_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
+    match douyu::generate_douyu_playlist_m3u("2_3", "斗鱼DOTA2", &request_base_url(&headers)).await {
         Ok(playlist) => (
             [
                 (
@@ -1011,14 +1012,43 @@ async fn get_douyu_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
             .into_response(),
         Err(error) => {
             crate::error_log::push(
-                "douyu",
-                format!("failed to generate douyu playlist: {error:#}"),
+                "dota",
+                format!("failed to generate DOTA2 playlist: {error:#}"),
             )
             .await;
-            tracing::warn!("Failed to generate Douyu playlist: {error:#}");
+            tracing::warn!("Failed to generate DOTA2 playlist: {error:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Douyu playlist generation failed",
+                "DOTA2 playlist generation failed",
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_cs_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
+    match douyu::generate_douyu_playlist_m3u("2_6", "斗鱼CS", &request_base_url(&headers)).await {
+        Ok(playlist) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/vnd.apple.mpegurl",
+                ),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            playlist,
+        )
+            .into_response(),
+        Err(error) => {
+            crate::error_log::push(
+                "cs",
+                format!("failed to generate CS playlist: {error:#}"),
+            )
+            .await;
+            tracing::warn!("Failed to generate CS playlist: {error:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CS playlist generation failed",
             )
                 .into_response()
         }
@@ -1355,7 +1385,7 @@ a{{color:#175cd3}}
 </div>
 <div class="card">
   <h2>Endpoints</h2>
-  <p><a href="/playlist.m3u">playlist.m3u</a> · <a href="/playlist.txt">playlist.txt</a> · <a href="/status">status</a> · <a href="/engine/status">engine status</a> · <a href="/metrics">metrics</a> · <a href="/gdtv/status">gdtv status</a> · <a href="/gdtv/status.json">gdtv json</a> · <a href="/gdtv.m3u">gdtv.m3u</a> · <a href="/ppv/status">ppv status</a> · <a href="/ppv/status.json">ppv json</a> · <a href="/ppv.m3u">ppv.m3u</a></p>
+  <p><a href="/playlist.m3u">playlist.m3u</a> · <a href="/playlist.txt">playlist.txt</a> · <a href="/status">status</a> · <a href="/engine/status">engine status</a> · <a href="/metrics">metrics</a> · <a href="/gdtv/status">gdtv status</a> · <a href="/gdtv/status.json">gdtv json</a> · <a href="/gdtv.m3u">gdtv.m3u</a> · <a href="/ppv/status">ppv status</a> · <a href="/ppv/status.json">ppv json</a> · <a href="/ppv.m3u">ppv.m3u</a> · <a href="/dota.m3u">dota.m3u</a> · <a href="/cs.m3u">cs.m3u</a></p>
 </div>
 </body>
 </html>
