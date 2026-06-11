@@ -1,3 +1,5 @@
+#reference repo
+lsar/
 
 #codegraph
 .codegraph/
@@ -10,6 +12,7 @@ node_modules/
 .env
 config.toml
 .cargo-remote.toml
+output/
 
 # agent files
 AGENTS.md

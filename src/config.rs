@@ -31,6 +31,7 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AppConfig> {
     apply_env_overrides(&mut config);
     apply_python_setting_aliases(&mut config);
     resolve_tilde_paths(&mut config);
+    ensure_config_files(&config)?;
     Ok(config)
 }
 
@@ -558,6 +559,165 @@ fn env_bool(name: &str) -> Option<bool> {
     })
 }
 
+const DEFAULT_WHITELIST: &str = r#"# 这是接口的白名单，白名单内的接口将不会参与测速，始终保留至结果最前；
+# 填写频道名称会直接保留该记录至该频道的最终结果，如：CCTV-1,接口地址；
+# 如果不填写频道名称，则该地址会被加入到所有频道的结果中，多条记录换行输入。
+# This is the whitelist for interfaces. Interfaces in the whitelist will not be speed tested and will always be kept at the top of the results;
+# Filling in the channel name will directly retain the record to the final result of the channel, such as: CCTV-1, interface address;
+# If the channel name is not filled in, the address will be added to the results of all channels, with multiple records entered on new lines.
+
+[KEYWORDS]
+# 以下区域是关键字白名单，某频道获取到的接口地址中含有指定关键字，则该接口会被加入该频道的白名单，多条记录换行输入。
+# This area is the keyword whitelist. If the interface address obtained by a certain channel contains the specified keyword, the interface will be added to the whitelist of the channel, with multiple records entered on new lines.
+"#;
+
+const DEFAULT_BLACKLIST: &str = r#"# 这是接口黑名单列表，符合关键字的接口将被拦截，一个关键字一行
+# This is the interface blacklist list, the interface matching the keyword will be blocked, one keyword line
+/audio/
+bxtv.3a.ink
+catvod.com
+综合
+新闻综合
+山东
+新闻
+"#;
+
+const DEFAULT_SUBSCRIBE: &str = r#"# 订阅源列表，每行一个M3U或TXT格式的订阅URL
+# List of subscription sources, one M3U or TXT format subscription URL per line
+"#;
+
+const DEFAULT_EPG: &str = r#"# EPG 节目单订阅源列表，每行一个 XMLTV 格式的 URL
+# List of EPG program guide sources, one XMLTV format URL per line
+http://epg.51zmt.top:11111/e.xml
+"#;
+
+const DEFAULT_ALIAS: &str = r#"# 频道别名映射，格式为：标准频道名,别名1,别名2...
+# Channel alias mappings, format: StandardChannelName,Alias1,Alias2...
+CCTV-1,CCTV1,CCTV-1 综合,CCTV-1综合
+CCTV-2,CCTV2,CCTV-2 财经,CCTV-2财经
+CCTV-3,CCTV3,CCTV-3 综艺,CCTV-3综艺
+CCTV-4,CCTV4,CCTV-4 中文国际,CCTV-4中文国际
+CCTV-5,CCTV5,CCTV-5 体育,CCTV-5体育
+CCTV-6,CCTV6,CCTV-6 电影,CCTV-6电影
+CCTV-7,CCTV7,CCTV-7 军事农业,CCTV-7国防军事
+CCTV-8,CCTV8,CCTV-8 电视剧,CCTV-8电视剧
+CCTV-9,CCTV9,CCTV-9 纪录,CCTV-9纪录
+CCTV-10,CCTV10,CCTV-10 科教,CCTV-10科教
+CCTV-11,CCTV11,CCTV-11 戏曲,CCTV-11戏曲
+CCTV-12,CCTV12,CCTV-12 社会与法,CCTV-12社会与法
+CCTV-13,CCTV13,CCTV-13 新闻,CCTV-13新闻
+CCTV-14,CCTV14,CCTV-14 少儿,CCTV-14少儿
+CCTV-15,CCTV15,CCTV-15 音乐,CCTV-15音乐
+CCTV-16,CCTV16,CCTV-16 奥林匹克,CCTV-16奥林匹克
+CCTV-17,CCTV17,CCTV-17 农业农村,CCTV-17农业农村
+"#;
+
+const DEFAULT_LOCAL: &str = r#"# 本地自定义频道，格式为：频道名称,接口地址
+# Local custom channels, format: ChannelName,InterfaceAddress
+# 例如：
+# CCTV-1综合,http://example.com/cctv1.m3u8
+"#;
+
+const DEFAULT_DEMO: &str = r#"央视频道,#genre#
+CCTV-1,http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8
+CCTV-3,http://ivi.bupt.edu.cn/hls/cctv3hd.m3u8
+CCTV-6,http://ivi.bupt.edu.cn/hls/cctv6hd.m3u8
+CCTV-8,http://ivi.bupt.edu.cn/hls/cctv8hd.m3u8
+"#;
+
+fn ensure_file_exists(path_str: &str, default_content: &str) -> Result<()> {
+    if path_str.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(path_str);
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create directory {:?}", parent))?;
+                tracing::info!("Created directory {:?}", parent);
+            }
+        }
+
+        // Try migrating from parent's parent (grandparent) if the file exists there
+        let mut migrated = false;
+        if let Some(filename) = path.file_name() {
+            if let Some(parent) = path.parent() {
+                if let Some(grandparent) = parent.parent() {
+                    let fallback_path = grandparent.join(filename);
+                    if fallback_path.exists() && fallback_path.is_file() {
+                        if let Ok(content) = fs::read_to_string(&fallback_path) {
+                            fs::write(path, content)
+                                .with_context(|| format!("Failed to migrate file to {:?}", path))?;
+                            tracing::info!("Migrated/copied file from {:?} to {:?}", fallback_path, path);
+                            migrated = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !migrated {
+            fs::write(path, default_content)
+                .with_context(|| format!("Failed to write default file {:?}", path))?;
+            tracing::info!("Created default file {:?}", path);
+        }
+    }
+    Ok(())
+}
+
+fn ensure_dir_exists(dir_str: &str) -> Result<()> {
+    if dir_str.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(dir_str);
+    if !path.exists() {
+        fs::create_dir_all(path)
+            .with_context(|| format!("Failed to create directory {:?}", path))?;
+        tracing::info!("Created directory {:?}", path);
+    }
+    Ok(())
+}
+
+pub fn ensure_config_files(config: &AppConfig) -> Result<()> {
+    // Files
+    ensure_file_exists(&config.filter.whitelist_path, DEFAULT_WHITELIST)?;
+    ensure_file_exists(&config.filter.blacklist_path, DEFAULT_BLACKLIST)?;
+    ensure_file_exists(&config.subscribe.sources_path, DEFAULT_SUBSCRIBE)?;
+    ensure_file_exists(&config.subscribe.alias_path, DEFAULT_ALIAS)?;
+    ensure_file_exists(&config.epg.sources_path, DEFAULT_EPG)?;
+    ensure_file_exists(&config.epg.alias_path, DEFAULT_ALIAS)?;
+    ensure_file_exists(&config.local.file_path, DEFAULT_LOCAL)?;
+
+    // Directories
+    ensure_dir_exists(&config.local.dir_path)?;
+    ensure_dir_exists(&config.local.hls_dir_path)?;
+    ensure_dir_exists(&config.local.hls_temp_path)?;
+    ensure_dir_exists(&config.output.logo_dir)?;
+
+    // Sources
+    for source in &config.sources {
+        if source.url.starts_with("file://") {
+            let file_path = &source.url[7..];
+            let default_content = if file_path.ends_with("demo.txt") {
+                DEFAULT_DEMO
+            } else {
+                ""
+            };
+            ensure_file_exists(file_path, default_content)?;
+        } else if !source.url.contains("://") {
+            let default_content = if source.url.ends_with("demo.txt") {
+                DEFAULT_DEMO
+            } else {
+                ""
+            };
+            ensure_file_exists(&source.url, default_content)?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn create_default_config<P: AsRef<Path>>(path: P) -> Result<()> {
     let default_config = r#"
 [server]
@@ -1063,5 +1223,60 @@ source_type = "txt"
             std::env::remove_var("IPDB_PATH");
         }
         assert_eq!(config.filter.ipdb_path, "custom.ipdb");
+    }
+
+    #[test]
+    fn test_ensure_config_files_creates_and_migrates() {
+        let _guard = env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        create_default_config(&path).unwrap();
+        let mut config = load_config(&path).unwrap();
+        
+        // 1. Prepare an existing file in the grandparent dir (e.g. dir/whitelist.txt)
+        let grandparent_file = dir.path().join("whitelist.txt");
+        let test_content = "CCTV-1,http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
+        fs::write(&grandparent_file, test_content).unwrap();
+
+        // 2. Adjust paths to point to dir/config/
+        config.filter.whitelist_path = dir.path().join("config/whitelist.txt").to_string_lossy().to_string();
+        config.filter.blacklist_path = dir.path().join("config/blacklist.txt").to_string_lossy().to_string();
+        config.subscribe.sources_path = dir.path().join("config/subscribe.txt").to_string_lossy().to_string();
+        config.subscribe.alias_path = dir.path().join("config/alias_path_sub.txt").to_string_lossy().to_string();
+        config.epg.sources_path = dir.path().join("config/epg.txt").to_string_lossy().to_string();
+        config.epg.alias_path = dir.path().join("config/alias_path_epg.txt").to_string_lossy().to_string();
+        config.local.file_path = dir.path().join("config/local.txt").to_string_lossy().to_string();
+        config.local.dir_path = dir.path().join("config/local").to_string_lossy().to_string();
+        config.local.hls_dir_path = dir.path().join("config/hls").to_string_lossy().to_string();
+        config.local.hls_temp_path = dir.path().join("config/hls_temp").to_string_lossy().to_string();
+        config.output.logo_dir = dir.path().join("config/logo").to_string_lossy().to_string();
+        config.sources = vec![
+            crate::models::SourceConfig {
+                name: "Demo".to_string(),
+                url: dir.path().join("config/demo.txt").to_string_lossy().to_string(),
+                source_type: crate::models::SourceType::Txt,
+            }
+        ];
+
+        // 3. Run ensure_config_files
+        ensure_config_files(&config).unwrap();
+
+        // 4. Verify migrated file
+        let migrated_whitelist = Path::new(&config.filter.whitelist_path);
+        assert!(migrated_whitelist.exists());
+        assert_eq!(fs::read_to_string(migrated_whitelist).unwrap(), test_content);
+
+        // 5. Verify default files created
+        let blacklist_file = Path::new(&config.filter.blacklist_path);
+        assert!(blacklist_file.exists());
+        assert!(fs::read_to_string(blacklist_file).unwrap().contains("综合"));
+
+        let demo_file = Path::new(&config.sources[0].url);
+        assert!(demo_file.exists());
+        assert!(fs::read_to_string(demo_file).unwrap().contains("CCTV-1"));
+
+        // 6. Verify directory created
+        let local_dir = Path::new(&config.local.dir_path);
+        assert!(local_dir.exists());
     }
 }
