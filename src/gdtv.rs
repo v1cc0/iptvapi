@@ -33,12 +33,22 @@ const OFFICIAL_DEVICE_ID: &str = "WEB_gdtv_playlist";
 const OFFICIAL_HTTP_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 const TCDN_TIMEOUT_SECS: u64 = 8;
 const DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS: u64 = 45;
+const DEFAULT_OFFICIAL_HLS_PLAYLIST_CACHE_TTL_SECS: u64 = 8;
+const DEFAULT_OFFICIAL_HLS_PLAYLIST_STALE_SECS: u64 = 180;
 const OFFICIAL_PLAY_URL_CACHE_TTL_ENV: &str = "TV_GDTV_PLAY_URL_CACHE_TTL_SECS";
+const OFFICIAL_HLS_PLAYLIST_CACHE_TTL_ENV: &str = "TV_GDTV_HLS_PLAYLIST_CACHE_TTL_SECS";
+const OFFICIAL_HLS_PLAYLIST_STALE_ENV: &str = "TV_GDTV_HLS_PLAYLIST_STALE_SECS";
 
 #[derive(Clone, Debug)]
 struct CachedOfficialPlayUrl {
     fetched_at: Instant,
     play_url: String,
+}
+
+#[derive(Clone, Debug)]
+struct CachedOfficialHlsPlaylist {
+    fetched_at: Instant,
+    playlist: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +62,8 @@ pub struct GdtvStatus {
 }
 
 static OFFICIAL_PLAY_URL_CACHE: OnceLock<Mutex<HashMap<u64, CachedOfficialPlayUrl>>> =
+    OnceLock::new();
+static OFFICIAL_HLS_PLAYLIST_CACHE: OnceLock<Mutex<HashMap<u64, CachedOfficialHlsPlaylist>>> =
     OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize)]
@@ -253,20 +265,51 @@ pub async fn resolve_official_play_url(pk: u64) -> anyhow::Result<String> {
 }
 
 pub async fn official_hls_playlist(pk: u64) -> anyhow::Result<String> {
+    if let Some(playlist) =
+        cached_official_hls_playlist(pk, official_hls_playlist_cache_ttl()).await
+    {
+        return Ok(playlist);
+    }
+
     let client = official_http_client()?;
     let play_url = cached_resolve_official_play_url_with_client(&client, pk).await?;
     match fetch_normalized_hls_playlist(&client, &play_url, 0).await {
-        Ok(playlist) => Ok(playlist),
+        Ok(playlist) => {
+            cache_official_hls_playlist(pk, &playlist).await;
+            Ok(playlist)
+        }
         Err(first_error) => {
             evict_official_play_url(pk).await;
-            let play_url = cached_resolve_official_play_url_with_client(&client, pk).await?;
-            fetch_normalized_hls_playlist(&client, &play_url, 0)
-                .await
-                .with_context(|| {
-                    format!(
-                        "refreshing GDTV token after HLS fetch failure; first error: {first_error:#}"
-                    )
-                })
+            let retry = async {
+                let play_url = cached_resolve_official_play_url_with_client(&client, pk).await?;
+                fetch_normalized_hls_playlist(&client, &play_url, 0).await
+            }
+            .await;
+
+            match retry {
+                Ok(playlist) => {
+                    cache_official_hls_playlist(pk, &playlist).await;
+                    Ok(playlist)
+                }
+                Err(retry_error) => {
+                    if let Some(playlist) =
+                        cached_official_hls_playlist(pk, official_hls_playlist_stale_ttl()).await
+                    {
+                        tracing::warn!(
+                            pk,
+                            first_error = %format!("{first_error:#}"),
+                            retry_error = %format!("{retry_error:#}"),
+                            "Serving stale GDTV HLS playlist after upstream refresh failure"
+                        );
+                        return Ok(playlist);
+                    }
+                    Err(retry_error).with_context(|| {
+                        format!(
+                            "refreshing GDTV token after HLS fetch failure; first error: {first_error:#}"
+                        )
+                    })
+                }
+            }
         }
     }
 }
@@ -304,20 +347,57 @@ async fn cached_resolve_official_play_url_with_client(
 fn official_play_url_cache_ttl() -> Duration {
     Duration::from_secs(parse_cache_ttl_secs(
         env::var(OFFICIAL_PLAY_URL_CACHE_TTL_ENV).ok(),
+        DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS,
     ))
 }
 
-fn parse_cache_ttl_secs(value: Option<String>) -> u64 {
+fn official_hls_playlist_cache_ttl() -> Duration {
+    Duration::from_secs(parse_cache_ttl_secs(
+        env::var(OFFICIAL_HLS_PLAYLIST_CACHE_TTL_ENV).ok(),
+        DEFAULT_OFFICIAL_HLS_PLAYLIST_CACHE_TTL_SECS,
+    ))
+}
+
+fn official_hls_playlist_stale_ttl() -> Duration {
+    Duration::from_secs(parse_cache_ttl_secs(
+        env::var(OFFICIAL_HLS_PLAYLIST_STALE_ENV).ok(),
+        DEFAULT_OFFICIAL_HLS_PLAYLIST_STALE_SECS,
+    ))
+}
+
+fn parse_cache_ttl_secs(value: Option<String>, default: u64) -> u64 {
     value
         .as_deref()
         .map(str::trim)
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS)
+        .unwrap_or(default)
 }
 
 fn official_play_url_cache() -> &'static Mutex<HashMap<u64, CachedOfficialPlayUrl>> {
     OFFICIAL_PLAY_URL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn official_hls_playlist_cache() -> &'static Mutex<HashMap<u64, CachedOfficialHlsPlaylist>> {
+    OFFICIAL_HLS_PLAYLIST_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn cached_official_hls_playlist(pk: u64, max_age: Duration) -> Option<String> {
+    let cache = official_hls_playlist_cache().lock().await;
+    cache
+        .get(&pk)
+        .filter(|cached| cached.fetched_at.elapsed() < max_age)
+        .map(|cached| cached.playlist.clone())
+}
+
+async fn cache_official_hls_playlist(pk: u64, playlist: &str) {
+    official_hls_playlist_cache().lock().await.insert(
+        pk,
+        CachedOfficialHlsPlaylist {
+            fetched_at: Instant::now(),
+            playlist: playlist.to_owned(),
+        },
+    );
 }
 
 async fn evict_official_play_url(pk: u64) {
@@ -968,18 +1048,36 @@ mod tests {
 
     #[test]
     fn parses_cache_ttl_from_env_value() {
-        assert_eq!(parse_cache_ttl_secs(Some("12".to_owned())), 12);
-        assert_eq!(parse_cache_ttl_secs(Some(" 7 ".to_owned())), 7);
         assert_eq!(
-            parse_cache_ttl_secs(Some("0".to_owned())),
+            parse_cache_ttl_secs(
+                Some("12".to_owned()),
+                DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
+            ),
+            12
+        );
+        assert_eq!(
+            parse_cache_ttl_secs(
+                Some(" 7 ".to_owned()),
+                DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
+            ),
+            7
+        );
+        assert_eq!(
+            parse_cache_ttl_secs(
+                Some("0".to_owned()),
+                DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
+            ),
             DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
         );
         assert_eq!(
-            parse_cache_ttl_secs(Some("nope".to_owned())),
+            parse_cache_ttl_secs(
+                Some("nope".to_owned()),
+                DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
+            ),
             DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
         );
         assert_eq!(
-            parse_cache_ttl_secs(None),
+            parse_cache_ttl_secs(None, DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS),
             DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS
         );
     }

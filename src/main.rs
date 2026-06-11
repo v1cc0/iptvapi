@@ -1,4 +1,5 @@
 mod config;
+mod douyu;
 mod engine;
 mod epg;
 mod error_log;
@@ -11,7 +12,6 @@ mod playlist;
 mod ppv;
 mod subscribe;
 mod telemetry;
-mod douyu;
 
 use crate::engine::{Engine, EngineStatus};
 use crate::models::{Channel, LocalConfig, OutputConfig};
@@ -915,7 +915,10 @@ async fn get_gdtv_play_hls(Path(pk): Path<u64>) -> impl IntoResponse {
                     axum::http::header::CONTENT_TYPE,
                     "application/vnd.apple.mpegurl",
                 ),
-                (axum::http::header::CACHE_CONTROL, "no-store"),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=8, stale-while-revalidate=180",
+                ),
             ],
             playlist,
         )
@@ -976,7 +979,10 @@ async fn get_ppv_play_hls(Path(id): Path<String>) -> impl IntoResponse {
                     axum::http::header::CONTENT_TYPE,
                     "application/vnd.apple.mpegurl",
                 ),
-                (axum::http::header::CACHE_CONTROL, "no-store"),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=8, stale-while-revalidate=180",
+                ),
                 (
                     axum::http::header::HeaderName::from_static("x-ppv-cache"),
                     cache_status,
@@ -998,7 +1004,8 @@ async fn get_ppv_play_hls(Path(id): Path<String>) -> impl IntoResponse {
 }
 
 async fn get_dota_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
-    match douyu::generate_douyu_playlist_m3u("2_3", "斗鱼DOTA2", &request_base_url(&headers)).await {
+    match douyu::generate_douyu_playlist_m3u("2_3", "斗鱼DOTA2", &request_base_url(&headers)).await
+    {
         Ok(playlist) => (
             [
                 (
@@ -1040,11 +1047,8 @@ async fn get_cs_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
         )
             .into_response(),
         Err(error) => {
-            crate::error_log::push(
-                "cs",
-                format!("failed to generate CS playlist: {error:#}"),
-            )
-            .await;
+            crate::error_log::push("cs", format!("failed to generate CS playlist: {error:#}"))
+                .await;
             tracing::warn!("Failed to generate CS playlist: {error:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
