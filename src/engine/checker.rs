@@ -22,6 +22,7 @@ pub struct Checker {
     client: Client,
     semaphore: Arc<Semaphore>,
     segment_semaphore: Arc<Semaphore>,
+    subprocess_semaphore: Arc<Semaphore>,
     timeout: Duration,
     max_download_bytes: u64,
 }
@@ -44,6 +45,7 @@ impl Checker {
             client,
             semaphore: Arc::new(Semaphore::new(concurrency.max(1))),
             segment_semaphore: Arc::new(Semaphore::new(segment_concurrency.max(1))),
+            subprocess_semaphore: Arc::new(Semaphore::new(4)),
             timeout: Duration::from_millis(timeout_ms),
             max_download_bytes,
         }
@@ -157,6 +159,7 @@ impl Checker {
         if !*FFPROBE_AVAILABLE.get_or_init(|| command_available(FFPROBE_CMD)) {
             return None;
         }
+        let _permit = self.subprocess_semaphore.acquire().await.ok()?;
         let timeout_window = self.timeout.saturating_add(Duration::from_secs(2));
         let output = timeout(timeout_window, {
             let mut command = Command::new(FFPROBE_CMD);
@@ -250,13 +253,18 @@ impl Checker {
         let max_bytes = self.max_download_bytes;
         let mut bytes = 0u64;
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.ok()?;
-            bytes = bytes.saturating_add(chunk.len() as u64);
-            if max_bytes > 0 && bytes >= max_bytes {
-                break;
+        let download_timeout = Duration::from_secs(3).min(self.timeout);
+        let download_fut = async {
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.ok()?;
+                bytes = bytes.saturating_add(chunk.len() as u64);
+                if max_bytes > 0 && bytes >= max_bytes {
+                    break;
+                }
             }
-        }
+            Some(())
+        };
+        let _ = timeout(download_timeout, download_fut).await;
         let seconds = started.elapsed().as_secs_f64();
         (bytes > 0 && seconds > 0.0).then_some(DownloadMeasurement { bytes, seconds })
     }
@@ -305,6 +313,7 @@ impl Checker {
         if !*FFMPEG_AVAILABLE.get_or_init(|| command_available(FFMPEG_CMD)) {
             return None;
         }
+        let _permit = self.subprocess_semaphore.acquire().await.ok()?;
         let timeout_secs = self.timeout.as_secs().max(1).to_string();
         let timeout_window = self.timeout.saturating_add(Duration::from_secs(2));
         let output = timeout(timeout_window, {
