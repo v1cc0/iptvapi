@@ -769,6 +769,7 @@ impl IpdbLookup {
     }
 }
 
+#[allow(dead_code)]
 fn enrich_location_isp_from_ipdb(channel: &mut Channel, ipdb: &IpdbLookup) {
     if is_retained_origin(channel.origin) || (channel.location.is_some() && channel.isp.is_some()) {
         return;
@@ -1206,10 +1207,7 @@ impl Engine {
         metrics::gauge!("iptvapi_fetched_channels").set(fetched_channels as f64);
         let ipdb = std::sync::Arc::new(IpdbLookup::load(&self.config.filter.ipdb_path));
 
-        // DNS resolution and IPDB location/ISP enrichment are performed after the channel checks
-        // (post-check) to avoid blocking the update startup with massive DNS resolution overhead.
-
-        // 2. Filter (Blacklist and detect Whitelist)
+        // 2. Filter (Blacklist, Whitelist, IP type, Headers, and Location/ISP filter)
         let mut filtered_channels = Vec::new();
         for mut channel in all_channels {
             if channel.url.trim().is_empty() {
@@ -1229,11 +1227,106 @@ impl Engine {
                 channel.is_online = true; // Whitelisted are always online for now
                 channel.latency = Some(0); // Top priority
             }
-            enrich_location_isp_from_ipdb(&mut channel, &ipdb);
-            if !channel_matches_location_isp_filter(&channel, &self.config.filter) {
-                continue;
-            }
             filtered_channels.push(channel);
+        }
+
+        // Apply Location/ISP filtering pre-check using a highly concurrent, non-blocking host DNS pre-resolver
+        let needs_ipdb_filtering = !self.config.filter.location.is_empty() || !self.config.filter.isp.is_empty();
+        if needs_ipdb_filtering {
+            // Group filtered channels by host to resolve each unique host only once
+            let mut host_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
+            for (index, channel) in filtered_channels.iter().enumerate() {
+                if channel.is_online || is_retained_origin(channel.origin) {
+                    continue;
+                }
+                if let Some(host) = crate::playlist::url_host(&channel.url) {
+                    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                    host_to_indices.entry(host).or_default().push(index);
+                }
+            }
+
+            // Find unique hosts that need DNS resolution or IPDB lookup
+            let mut resolved_ips: HashMap<String, String> = HashMap::new();
+            let mut hosts_to_resolve = Vec::new();
+            for host in host_to_indices.keys() {
+                if host.parse::<std::net::IpAddr>().is_ok() {
+                    resolved_ips.insert(host.clone(), host.clone());
+                } else {
+                    hosts_to_resolve.push(host.clone());
+                }
+            }
+
+            // Resolve hostnames concurrently with a semaphore and timeout
+            let dns_semaphore = Arc::new(tokio::sync::Semaphore::new(20));
+            let mut dns_tasks = Vec::new();
+            for host in hosts_to_resolve {
+                let sem = dns_semaphore.clone();
+                dns_tasks.push(async move {
+                    let _permit = sem.acquire().await.ok();
+                    let addr_opt = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        tokio::net::lookup_host(format!("{}:0", host))
+                    )
+                    .await;
+                    let ip = match addr_opt {
+                        Ok(Ok(mut addrs)) => addrs.next().map(|addr| addr.ip().to_string()),
+                        _ => None,
+                    };
+                    (host, ip)
+                });
+            }
+
+            let dns_results = futures::stream::iter(dns_tasks)
+                .buffer_unordered(20)
+                .collect::<Vec<_>>()
+                .await;
+
+            for (host, ip_opt) in dns_results {
+                if let Some(ip) = ip_opt {
+                    resolved_ips.insert(host, ip);
+                }
+            }
+
+            // Perform IPDB lookup and filter matching for resolved IPs
+            let mut host_matches: HashMap<String, (bool, Option<String>, Option<String>)> = HashMap::new();
+            for (host, ip) in resolved_ips {
+                if let Some((location, isp)) = ipdb.find_map(&ip) {
+                    let matches = metadata_matches_filter(location.as_deref(), &self.config.filter.location)
+                        && metadata_matches_filter(isp.as_deref(), &self.config.filter.isp);
+                    host_matches.insert(host, (matches, location, isp));
+                } else {
+                    let matches = metadata_matches_filter(None, &self.config.filter.location)
+                        && metadata_matches_filter(None, &self.config.filter.isp);
+                    host_matches.insert(host, (matches, None, None));
+                }
+            }
+
+            // Keep only channels that match the filter or are whitelisted
+            let mut final_filtered = Vec::new();
+            for mut channel in filtered_channels {
+                if channel.is_online || is_retained_origin(channel.origin) {
+                    final_filtered.push(channel);
+                    continue;
+                }
+                if let Some(host) = crate::playlist::url_host(&channel.url) {
+                    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                    if let Some((matches, location, isp)) = host_matches.get(&host) {
+                        if *matches {
+                            if channel.location.is_none() {
+                                channel.location = location.clone();
+                            }
+                            if channel.isp.is_none() {
+                                channel.isp = isp.clone();
+                            }
+                            final_filtered.push(channel);
+                        }
+                    }
+                } else {
+                    // Invalid URL or no host, keep it for checker to handle
+                    final_filtered.push(channel);
+                }
+            }
+            filtered_channels = final_filtered;
         }
 
         let filtered_channels_count = filtered_channels.len();
@@ -1304,8 +1397,7 @@ impl Engine {
 
         // Apply location / ISP filter post-check
         let mut final_results = Vec::new();
-        for mut channel in resolved_results {
-            enrich_location_isp_from_ipdb(&mut channel, &ipdb);
+        for channel in resolved_results {
             if channel_matches_location_isp_filter(&channel, &self.config.filter) {
                 final_results.push(channel);
             }
