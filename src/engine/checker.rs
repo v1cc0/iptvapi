@@ -21,7 +21,7 @@ static FFMPEG_AVAILABLE: OnceLock<bool> = OnceLock::new();
 pub struct Checker {
     client: Client,
     semaphore: Arc<Semaphore>,
-    segment_semaphore: Arc<Semaphore>,
+    segment_concurrency: usize,
     subprocess_semaphore: Arc<Semaphore>,
     timeout: Duration,
     max_download_bytes: u64,
@@ -44,7 +44,7 @@ impl Checker {
         Self {
             client,
             semaphore: Arc::new(Semaphore::new(concurrency.max(1))),
-            segment_semaphore: Arc::new(Semaphore::new(segment_concurrency.max(1))),
+            segment_concurrency: segment_concurrency.max(1),
             subprocess_semaphore: Arc::new(Semaphore::new(4)),
             timeout: Duration::from_millis(timeout_ms),
             max_download_bytes,
@@ -221,11 +221,15 @@ impl Checker {
         if segments.is_empty() {
             return None;
         }
+        let local_sem = Arc::new(Semaphore::new(self.segment_concurrency));
         let results = join_segment_measurements(
             segments
                 .into_iter()
                 .take(5)
-                .map(|segment| self.measure_download_segment(segment, headers)),
+                .map(|segment| {
+                    let sem = local_sem.clone();
+                    self.measure_download_segment(segment, headers, sem)
+                }),
         )
         .await;
         measured_speed_mibps(&results)
@@ -235,8 +239,9 @@ impl Checker {
         &self,
         url: String,
         headers: Option<&HashMap<String, String>>,
+        sem: Arc<Semaphore>,
     ) -> Option<DownloadMeasurement> {
-        let _permit = self.segment_semaphore.acquire().await.ok()?;
+        let _permit = sem.acquire().await.ok()?;
         self.measure_download(url, headers).await
     }
 
