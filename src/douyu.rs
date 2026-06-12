@@ -152,7 +152,7 @@ pub async fn generate_douyu_playlist_m3u(
 struct EncryptionResponse {
     error: i8,
     msg: String,
-    data: Option<EncryptionData>,
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -168,7 +168,7 @@ struct EncryptionData {
 struct RoomInfo {
     error: i32,
     msg: String,
-    data: Option<RoomData>,
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -260,7 +260,9 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
         anyhow::bail!("encryption fetch failed: {}", enc_data_res.msg);
     }
 
-    let enc_data = enc_data_res.data.unwrap();
+    let enc_data_val = enc_data_res.data.unwrap();
+    let enc_data: EncryptionData = serde_json::from_value(enc_data_val)
+        .context("failed to parse encryption data struct")?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -312,7 +314,9 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
         anyhow::bail!("failed to resolve room info: {}", room_info.msg);
     }
 
-    let room_data = room_info.data.unwrap();
+    let room_data_val = room_info.data.unwrap();
+    let room_data: RoomData = serde_json::from_value(room_data_val)
+        .context("failed to parse room data struct")?;
     let rtmp_live = room_data
         .rtmp_live
         .ok_or_else(|| anyhow::anyhow!("stream is offline"))?;
@@ -370,5 +374,18 @@ mod tests {
                 println!("test_resolve_douyu_play_url got error: {:?}", e);
             }
         }
+    }
+
+    #[test]
+    fn test_room_info_deserialization_error_case() {
+        let json_data = r#"{"error": 1, "msg": "房间未开播", "data": ""}"#;
+        let room_info: RoomInfo = serde_json::from_str(json_data).unwrap();
+        assert_eq!(room_info.error, 1);
+        assert_eq!(room_info.msg, "房间未开播");
+        assert!(room_info.data.is_some());
+        
+        let data_val = room_info.data.unwrap();
+        let parsed_data: Result<RoomData, _> = serde_json::from_value(data_val);
+        assert!(parsed_data.is_err());
     }
 }
