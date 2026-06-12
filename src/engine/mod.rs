@@ -1241,7 +1241,7 @@ impl Engine {
 
         // 3. Check (Concurrent) - skip those already marked online by whitelist if desired,
         // but here we check everyone for latency unless it's whitelist.
-        let mut results = if self.config.engine.open_speed_test {
+        let results = if self.config.engine.open_speed_test {
             tracing::info!("Checking {} channels...", filtered_channels.len());
             check_filtered_channels(
                 filtered_channels,
