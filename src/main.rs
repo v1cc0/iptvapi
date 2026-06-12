@@ -909,20 +909,27 @@ async fn get_gdtv_status_json() -> impl IntoResponse {
 
 async fn get_gdtv_play_hls(Path(pk): Path<u64>) -> impl IntoResponse {
     match gdtv::official_hls_playlist(pk).await {
-        Ok(playlist) => (
-            [
-                (
-                    axum::http::header::CONTENT_TYPE,
-                    "application/vnd.apple.mpegurl",
-                ),
-                (
-                    axum::http::header::CACHE_CONTROL,
-                    "public, max-age=8, stale-while-revalidate=180",
-                ),
-            ],
-            playlist,
-        )
-            .into_response(),
+        Ok(playlist) => {
+            let max_age = gdtv::official_hls_playlist_cache_ttl().as_secs();
+            let stale = gdtv::official_hls_playlist_stale_ttl().as_secs();
+            let cache_control = format!("public, max-age={max_age}, stale-while-revalidate={stale}");
+            let cache_control_val = axum::http::HeaderValue::try_from(cache_control)
+                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("public, max-age=30, stale-while-revalidate=180"));
+            (
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("application/vnd.apple.mpegurl"),
+                    ),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        cache_control_val,
+                    ),
+                ],
+                playlist,
+            )
+                .into_response()
+        }
         Err(error) => {
             crate::error_log::push("gdtv", format!("failed to resolve channel {pk}: {error:#}"))
                 .await;
@@ -973,24 +980,31 @@ async fn get_ppv_status_json() -> impl IntoResponse {
 
 async fn get_ppv_play_hls(Path(id): Path<String>) -> impl IntoResponse {
     match ppv::ppv_hls_playlist(&id).await {
-        Ok((playlist, cache_status)) => (
-            [
-                (
-                    axum::http::header::CONTENT_TYPE,
-                    "application/vnd.apple.mpegurl",
-                ),
-                (
-                    axum::http::header::CACHE_CONTROL,
-                    "public, max-age=8, stale-while-revalidate=180",
-                ),
-                (
-                    axum::http::header::HeaderName::from_static("x-ppv-cache"),
-                    cache_status,
-                ),
-            ],
-            playlist,
-        )
-            .into_response(),
+        Ok((playlist, cache_status)) => {
+            let max_age = ppv::ppv_hls_playlist_cache_ttl().as_secs();
+            let stale = ppv::ppv_hls_playlist_stale_ttl().as_secs();
+            let cache_control = format!("public, max-age={max_age}, stale-while-revalidate={stale}");
+            let cache_control_val = axum::http::HeaderValue::try_from(cache_control)
+                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("public, max-age=30, stale-while-revalidate=180"));
+            (
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("application/vnd.apple.mpegurl"),
+                    ),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        cache_control_val,
+                    ),
+                    (
+                        axum::http::header::HeaderName::from_static("x-ppv-cache"),
+                        axum::http::HeaderValue::from_static(cache_status),
+                    ),
+                ],
+                playlist,
+            )
+                .into_response()
+        }
         Err(error) => {
             crate::error_log::push(
                 "ppv",

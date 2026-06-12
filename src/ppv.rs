@@ -22,6 +22,47 @@ static POO_DOMAIN_CACHE: OnceLock<DashMap<String, (String, u64)>> = OnceLock::ne
 static STREAMS_CACHE: OnceLock<DashMap<String, (Vec<u8>, u64)>> = OnceLock::new();
 const STREAMS_CACHE_TTL: u64 = 120;
 
+const DEFAULT_PPV_HLS_PLAYLIST_CACHE_TTL_SECS: u64 = 30;
+const DEFAULT_PPV_HLS_PLAYLIST_STALE_SECS: u64 = 180;
+const PPV_HLS_PLAYLIST_CACHE_TTL_ENV: &str = "TV_PPV_HLS_PLAYLIST_CACHE_TTL_SECS";
+const PPV_HLS_PLAYLIST_STALE_ENV: &str = "TV_PPV_HLS_PLAYLIST_STALE_SECS";
+
+#[derive(Clone, Debug)]
+struct CachedPpvPlaylist {
+    fetched_at: std::time::Instant,
+    playlist: String,
+    cache_status: &'static str,
+}
+
+static PPV_PLAYLIST_CACHE: OnceLock<DashMap<String, CachedPpvPlaylist>> = OnceLock::new();
+
+fn ppv_playlist_cache() -> &'static DashMap<String, CachedPpvPlaylist> {
+    PPV_PLAYLIST_CACHE.get_or_init(DashMap::new)
+}
+
+fn parse_cache_ttl_secs(value: Option<String>, default: u64) -> u64 {
+    value
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+pub fn ppv_hls_playlist_cache_ttl() -> std::time::Duration {
+    std::time::Duration::from_secs(parse_cache_ttl_secs(
+        std::env::var(PPV_HLS_PLAYLIST_CACHE_TTL_ENV).ok(),
+        DEFAULT_PPV_HLS_PLAYLIST_CACHE_TTL_SECS,
+    ))
+}
+
+pub fn ppv_hls_playlist_stale_ttl() -> std::time::Duration {
+    std::time::Duration::from_secs(parse_cache_ttl_secs(
+        std::env::var(PPV_HLS_PLAYLIST_STALE_ENV).ok(),
+        DEFAULT_PPV_HLS_PLAYLIST_STALE_SECS,
+    ))
+}
+
 fn get_cached_poo_domain() -> Option<String> {
     if let Some(entry) = POO_DOMAIN_CACHE.get_or_init(DashMap::new).get("domain") {
         let (domain, expires_at) = entry.value();
@@ -846,39 +887,78 @@ async fn try_cached_ppv_play(
 }
 
 pub async fn ppv_hls_playlist(id: &str) -> anyhow::Result<(String, &'static str)> {
-    let client = get_client();
+    let id_trimmed = id.trim();
 
-    // Fast path: both room and source are cached — zero API calls.
-    if let Some(result) = try_cached_ppv_play(&client, id).await {
-        return result;
+    // Try serving from fresh playlist cache first
+    if let Some(cached) = ppv_playlist_cache().get(id_trimmed) {
+        if cached.fetched_at.elapsed() < ppv_hls_playlist_cache_ttl() {
+            return Ok((cached.playlist.clone(), cached.cache_status));
+        }
     }
 
-    // Slow path: fetch the catalog and resolve the room.
-    let streams_resp = fetch_ppv_streams_json(&client).await?;
-    extract_and_cache_poo_domain(&streams_resp);
-    let (slug, domain) = resolve_room_from_streams(id, &streams_resp)?;
+    let client = get_client();
 
-    match resolve_live_m3u8(&client, &slug, &domain).await {
-        Ok((m3u8, base, cache_status)) => {
-            let absolute_m3u8 = abs_m3u8(&m3u8, &base);
-            Ok((absolute_m3u8, cache_status))
+    let result = async {
+        // Fast path: both room and source are cached — zero API calls.
+        if let Some(result) = try_cached_ppv_play(&client, id_trimmed).await {
+            return result;
+        }
+
+        // Slow path: fetch the catalog and resolve the room.
+        let streams_resp = fetch_ppv_streams_json(&client).await?;
+        extract_and_cache_poo_domain(&streams_resp);
+        let (slug, domain) = resolve_room_from_streams(id_trimmed, &streams_resp)?;
+
+        match resolve_live_m3u8(&client, &slug, &domain).await {
+            Ok((m3u8, base, cache_status)) => {
+                let absolute_m3u8 = abs_m3u8(&m3u8, &base);
+                Ok((absolute_m3u8, cache_status))
+            }
+            Err(err) => {
+                if is_non_retryable(&err) {
+                    return Err(err);
+                }
+                tracing::warn!(
+                    "Failed first resolve attempt for slug {slug}: {err:#}. Retrying with fresh domain..."
+                );
+                clear_poo_domain_cache();
+                room_cache().remove(id_trimmed);
+                STREAMS_CACHE.get_or_init(DashMap::new).remove("streams");
+                let streams_resp = fetch_ppv_streams_json(&client).await?;
+                extract_and_cache_poo_domain(&streams_resp);
+                let (slug, domain) = resolve_room_from_streams(id_trimmed, &streams_resp)?;
+                let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug, &domain).await?;
+                let absolute_m3u8 = abs_m3u8(&m3u8, &base);
+                Ok((absolute_m3u8, cache_status))
+            }
+        }
+    }
+    .await;
+
+    match result {
+        Ok((playlist, cache_status)) => {
+            ppv_playlist_cache().insert(
+                id_trimmed.to_string(),
+                CachedPpvPlaylist {
+                    fetched_at: std::time::Instant::now(),
+                    playlist: playlist.clone(),
+                    cache_status,
+                },
+            );
+            Ok((playlist, cache_status))
         }
         Err(err) => {
-            if is_non_retryable(&err) {
-                return Err(err);
+            if let Some(cached) = ppv_playlist_cache().get(id_trimmed) {
+                if cached.fetched_at.elapsed() < ppv_hls_playlist_stale_ttl() {
+                    tracing::warn!(
+                        id = id_trimmed,
+                        error = %format!("{err:#}"),
+                        "Serving stale PPV HLS playlist after upstream refresh failure"
+                    );
+                    return Ok((cached.playlist.clone(), "STALE"));
+                }
             }
-            tracing::warn!(
-                "Failed first resolve attempt for slug {slug}: {err:#}. Retrying with fresh domain..."
-            );
-            clear_poo_domain_cache();
-            room_cache().remove(id.trim());
-            STREAMS_CACHE.get_or_init(DashMap::new).remove("streams");
-            let streams_resp = fetch_ppv_streams_json(&client).await?;
-            extract_and_cache_poo_domain(&streams_resp);
-            let (slug, domain) = resolve_room_from_streams(id, &streams_resp)?;
-            let (m3u8, base, cache_status) = resolve_live_m3u8(&client, &slug, &domain).await?;
-            let absolute_m3u8 = abs_m3u8(&m3u8, &base);
-            Ok((absolute_m3u8, cache_status))
+            Err(err)
         }
     }
 }
@@ -1148,5 +1228,34 @@ mod tests {
         assert!(!is_non_retryable(&anyhow::anyhow!(
             "connection closed before message completed"
         )));
+    }
+
+    #[test]
+    fn test_ppv_hls_playlist_caching() {
+        let id = "test-cached-channel";
+        ppv_playlist_cache().remove(id);
+
+        // Populate the cache manually
+        let test_playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nsegment1.ts".to_string();
+        ppv_playlist_cache().insert(
+            id.to_string(),
+            CachedPpvPlaylist {
+                fetched_at: std::time::Instant::now(),
+                playlist: test_playlist.clone(),
+                cache_status: "HIT",
+            },
+        );
+
+        // Fetch using ppv_hls_playlist and verify it is a HIT and returns our playlist
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let res = rt.block_on(ppv_hls_playlist(id)).unwrap();
+        assert_eq!(res.0, test_playlist);
+        assert_eq!(res.1, "HIT");
+
+        // Clean up
+        ppv_playlist_cache().remove(id);
     }
 }

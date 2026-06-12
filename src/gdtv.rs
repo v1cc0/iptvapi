@@ -33,7 +33,7 @@ const OFFICIAL_DEVICE_ID: &str = "WEB_gdtv_playlist";
 const OFFICIAL_HTTP_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 const TCDN_TIMEOUT_SECS: u64 = 8;
 const DEFAULT_OFFICIAL_PLAY_URL_CACHE_TTL_SECS: u64 = 45;
-const DEFAULT_OFFICIAL_HLS_PLAYLIST_CACHE_TTL_SECS: u64 = 8;
+const DEFAULT_OFFICIAL_HLS_PLAYLIST_CACHE_TTL_SECS: u64 = 30;
 const DEFAULT_OFFICIAL_HLS_PLAYLIST_STALE_SECS: u64 = 180;
 const OFFICIAL_PLAY_URL_CACHE_TTL_ENV: &str = "TV_GDTV_PLAY_URL_CACHE_TTL_SECS";
 const OFFICIAL_HLS_PLAYLIST_CACHE_TTL_ENV: &str = "TV_GDTV_HLS_PLAYLIST_CACHE_TTL_SECS";
@@ -351,14 +351,14 @@ fn official_play_url_cache_ttl() -> Duration {
     ))
 }
 
-fn official_hls_playlist_cache_ttl() -> Duration {
+pub fn official_hls_playlist_cache_ttl() -> Duration {
     Duration::from_secs(parse_cache_ttl_secs(
         env::var(OFFICIAL_HLS_PLAYLIST_CACHE_TTL_ENV).ok(),
         DEFAULT_OFFICIAL_HLS_PLAYLIST_CACHE_TTL_SECS,
     ))
 }
 
-fn official_hls_playlist_stale_ttl() -> Duration {
+pub fn official_hls_playlist_stale_ttl() -> Duration {
     Duration::from_secs(parse_cache_ttl_secs(
         env::var(OFFICIAL_HLS_PLAYLIST_STALE_ENV).ok(),
         DEFAULT_OFFICIAL_HLS_PLAYLIST_STALE_SECS,
