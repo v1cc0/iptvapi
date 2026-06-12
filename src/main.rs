@@ -64,7 +64,11 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .init();
 
-    tracing::info!("Starting iptvapi-rs...");
+    tracing::info!(
+        "Starting iptvapi v{}({})...",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_COMMIT_HASH")
+    );
     let metrics_handle = telemetry::init()?;
     telemetry::spawn_process_metrics_task();
 
