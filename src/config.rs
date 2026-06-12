@@ -48,6 +48,7 @@ fn expand_tilde(s: &str) -> String {
                 format!("{}/{}", home, suffix)
             }
         } else {
+            tracing::warn!("Path '{}' starts with '~' but the HOME environment variable is not set. Expansion skipped.", s);
             s.to_owned()
         }
     } else {
