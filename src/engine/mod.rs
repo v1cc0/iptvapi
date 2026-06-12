@@ -10,7 +10,7 @@ use crate::models::{AppConfig, Channel, ChannelOrigin, EngineConfig, FilterConfi
 use anyhow::Result;
 use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
 use dashmap::DashMap;
-use futures::future::join_all;
+use futures::{future::join_all, StreamExt};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
@@ -1204,7 +1204,52 @@ impl Engine {
         let requested_names = requested_channel_names(&all_channels);
         let fetched_channels = all_channels.len();
         metrics::gauge!("iptvapi_fetched_channels").set(fetched_channels as f64);
-        let ipdb = IpdbLookup::load(&self.config.filter.ipdb_path);
+        let ipdb = std::sync::Arc::new(IpdbLookup::load(&self.config.filter.ipdb_path));
+
+        // Asynchronously and concurrently pre-resolve DNS and enrich location/ISP from IPDB
+        // to avoid blocking sequentially for minutes.
+        let mut resolve_tasks = Vec::new();
+        for mut channel in all_channels {
+            let ipdb_clone = ipdb.clone();
+            resolve_tasks.push(async move {
+                if !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
+                    if let Some(host) = crate::playlist::url_host(&channel.url) {
+                        let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                        if host.parse::<std::net::IpAddr>().is_err() {
+                            // Resolve hostname asynchronously
+                            if let Ok(mut addrs) = tokio::net::lookup_host(format!("{}:0", host)).await {
+                                if let Some(addr) = addrs.next() {
+                                    let ip = addr.ip().to_string();
+                                    if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
+                                        if channel.location.is_none() {
+                                            channel.location = location;
+                                        }
+                                        if channel.isp.is_none() {
+                                            channel.isp = isp;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Already an IP address
+                            if let Some((location, isp)) = ipdb_clone.find_map(&host) {
+                                if channel.location.is_none() {
+                                    channel.location = location;
+                                }
+                                if channel.isp.is_none() {
+                                    channel.isp = isp;
+                                }
+                            }
+                        }
+                    }
+                }
+                channel
+            });
+        }
+        let all_channels = futures::stream::iter(resolve_tasks)
+            .buffer_unordered(100)
+            .collect::<Vec<_>>()
+            .await;
 
         // 2. Filter (Blacklist and detect Whitelist)
         let mut filtered_channels = Vec::new();
