@@ -1206,51 +1206,8 @@ impl Engine {
         metrics::gauge!("iptvapi_fetched_channels").set(fetched_channels as f64);
         let ipdb = std::sync::Arc::new(IpdbLookup::load(&self.config.filter.ipdb_path));
 
-        // Asynchronously and concurrently pre-resolve DNS and enrich location/ISP from IPDB
-        // to avoid blocking sequentially for minutes.
-        let needs_ipdb_filtering = !self.config.filter.location.is_empty() || !self.config.filter.isp.is_empty();
-        let mut resolve_tasks = Vec::new();
-        for mut channel in all_channels {
-            let ipdb_clone = ipdb.clone();
-            resolve_tasks.push(async move {
-                if needs_ipdb_filtering && !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
-                    if let Some(host) = crate::playlist::url_host(&channel.url) {
-                        let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
-                        if host.parse::<std::net::IpAddr>().is_err() {
-                            // Resolve hostname asynchronously with a 2-second timeout
-                            if let Ok(Ok(mut addrs)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(format!("{}:0", host))).await {
-                                if let Some(addr) = addrs.next() {
-                                    let ip = addr.ip().to_string();
-                                    if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
-                                        if channel.location.is_none() {
-                                            channel.location = location;
-                                        }
-                                        if channel.isp.is_none() {
-                                            channel.isp = isp;
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // Already an IP address
-                            if let Some((location, isp)) = ipdb_clone.find_map(&host) {
-                                if channel.location.is_none() {
-                                    channel.location = location;
-                                }
-                                if channel.isp.is_none() {
-                                    channel.isp = isp;
-                                }
-                            }
-                        }
-                    }
-                }
-                channel
-            });
-        }
-        let all_channels = futures::stream::iter(resolve_tasks)
-            .buffer_unordered(100)
-            .collect::<Vec<_>>()
-            .await;
+        // DNS resolution and IPDB location/ISP enrichment are performed after the channel checks
+        // (post-check) to avoid blocking the update startup with massive DNS resolution overhead.
 
         // 2. Filter (Blacklist and detect Whitelist)
         let mut filtered_channels = Vec::new();
@@ -1304,48 +1261,56 @@ impl Engine {
         };
 
         // Post-check DNS resolution / IPDB enrichment for online channels
-        if !needs_ipdb_filtering {
-            let mut post_resolve_tasks = Vec::new();
-            for mut channel in results {
-                let ipdb_clone = ipdb.clone();
-                post_resolve_tasks.push(async move {
-                    if channel.is_online && !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
-                        if let Some(host) = crate::playlist::url_host(&channel.url) {
-                            let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
-                            if host.parse::<std::net::IpAddr>().is_err() {
-                                if let Ok(Ok(mut addrs)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(format!("{}:0", host))).await {
-                                    if let Some(addr) = addrs.next() {
-                                        let ip = addr.ip().to_string();
-                                        if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
-                                            if channel.location.is_none() {
-                                                channel.location = location;
-                                            }
-                                            if channel.isp.is_none() {
-                                                channel.isp = isp;
-                                            }
+        let mut post_resolve_tasks = Vec::new();
+        for mut channel in results {
+            let ipdb_clone = ipdb.clone();
+            post_resolve_tasks.push(async move {
+                if channel.is_online && !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
+                    if let Some(host) = crate::playlist::url_host(&channel.url) {
+                        let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                        if host.parse::<std::net::IpAddr>().is_err() {
+                            if let Ok(Ok(mut addrs)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(format!("{}:0", host))).await {
+                                if let Some(addr) = addrs.next() {
+                                    let ip = addr.ip().to_string();
+                                    if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
+                                        if channel.location.is_none() {
+                                            channel.location = location;
+                                        }
+                                        if channel.isp.is_none() {
+                                            channel.isp = isp;
                                         }
                                     }
                                 }
-                            } else {
-                                if let Some((location, isp)) = ipdb_clone.find_map(&host) {
-                                    if channel.location.is_none() {
-                                        channel.location = location;
-                                    }
-                                    if channel.isp.is_none() {
-                                        channel.isp = isp;
-                                    }
+                            }
+                        } else {
+                            if let Some((location, isp)) = ipdb_clone.find_map(&host) {
+                                if channel.location.is_none() {
+                                    channel.location = location;
+                                }
+                                if channel.isp.is_none() {
+                                    channel.isp = isp;
                                 }
                             }
                         }
                     }
-                    channel
-                });
-            }
-            results = futures::stream::iter(post_resolve_tasks)
-                .buffer_unordered(50)
-                .collect::<Vec<_>>()
-                .await;
+                }
+                channel
+            });
         }
+        let resolved_results = futures::stream::iter(post_resolve_tasks)
+            .buffer_unordered(50)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Apply location / ISP filter post-check
+        let mut final_results = Vec::new();
+        for mut channel in resolved_results {
+            enrich_location_isp_from_ipdb(&mut channel, &ipdb);
+            if channel_matches_location_isp_filter(&channel, &self.config.filter) {
+                final_results.push(channel);
+            }
+        }
+        let results = final_results;
 
         if self.config.output.open_history {
             for channel in results
