@@ -684,7 +684,7 @@ fn default_speed_test_allow_invalid_certs() -> bool {
 }
 
 fn default_speed_test_max_download_bytes() -> u64 {
-    8 * 1024 * 1024
+    1024 * 1024
 }
 
 fn default_speed_test_segment_concurrency() -> usize {

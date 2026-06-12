@@ -48,7 +48,10 @@ fn expand_tilde(s: &str) -> String {
                 format!("{}/{}", home, suffix)
             }
         } else {
-            tracing::warn!("Path '{}' starts with '~' but the HOME environment variable is not set. Expansion skipped.", s);
+            tracing::warn!(
+                "Path '{}' starts with '~' but the HOME environment variable is not set. Expansion skipped.",
+                s
+            );
             s.to_owned()
         }
     } else {
@@ -743,7 +746,7 @@ http_proxy = ""
 speed_test_limit = 5
 speed_test_timeout = 10
 speed_test_allow_invalid_certs = true
-speed_test_max_download_bytes = 8388608
+speed_test_max_download_bytes = 1048576
 speed_test_segment_concurrency = 2
 speed_test_filter_host = false
 open_full_speed_test = false

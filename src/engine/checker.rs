@@ -56,7 +56,12 @@ impl Checker {
 
         let start = Instant::now();
         let check_timeout = self.timeout.saturating_add(Duration::from_secs(5));
-        let probe = match timeout(check_timeout, self.probe_playable(&channel.url, channel.headers.as_ref())).await {
+        let probe = match timeout(
+            check_timeout,
+            self.probe_playable(&channel.url, channel.headers.as_ref()),
+        )
+        .await
+        {
             Ok(res) => res,
             Err(_) => {
                 tracing::warn!("Channel check timed out for {}", channel.url);
@@ -227,15 +232,10 @@ impl Checker {
             return None;
         }
         let local_sem = Arc::new(Semaphore::new(self.segment_concurrency));
-        let results = join_segment_measurements(
-            segments
-                .into_iter()
-                .take(5)
-                .map(|segment| {
-                    let sem = local_sem.clone();
-                    self.measure_download_segment(segment, headers, sem)
-                }),
-        )
+        let results = join_segment_measurements(segments.into_iter().take(5).map(|segment| {
+            let sem = local_sem.clone();
+            self.measure_download_segment(segment, headers, sem)
+        }))
         .await;
         measured_speed_mibps(&results)
     }

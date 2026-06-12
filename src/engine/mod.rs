@@ -10,7 +10,7 @@ use crate::models::{AppConfig, Channel, ChannelOrigin, EngineConfig, FilterConfi
 use anyhow::Result;
 use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
 use dashmap::DashMap;
-use futures::{future::join_all, StreamExt};
+use futures::{StreamExt, future::join_all};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
@@ -1231,7 +1231,8 @@ impl Engine {
         }
 
         // Apply Location/ISP filtering pre-check using a highly concurrent, non-blocking host DNS pre-resolver
-        let needs_ipdb_filtering = !self.config.filter.location.is_empty() || !self.config.filter.isp.is_empty();
+        let needs_ipdb_filtering =
+            !self.config.filter.location.is_empty() || !self.config.filter.isp.is_empty();
         if needs_ipdb_filtering {
             // Group filtered channels by host to resolve each unique host only once
             let mut host_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
@@ -1240,7 +1241,10 @@ impl Engine {
                     continue;
                 }
                 if let Some(host) = crate::playlist::url_host(&channel.url) {
-                    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                    let host = host
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .to_string();
                     host_to_indices.entry(host).or_default().push(index);
                 }
             }
@@ -1265,7 +1269,7 @@ impl Engine {
                     let _permit = sem.acquire().await.ok();
                     let addr_opt = tokio::time::timeout(
                         Duration::from_secs(2),
-                        tokio::net::lookup_host(format!("{}:0", host))
+                        tokio::net::lookup_host(format!("{}:0", host)),
                     )
                     .await;
                     let ip = match addr_opt {
@@ -1288,11 +1292,13 @@ impl Engine {
             }
 
             // Perform IPDB lookup and filter matching for resolved IPs
-            let mut host_matches: HashMap<String, (bool, Option<String>, Option<String>)> = HashMap::new();
+            let mut host_matches: HashMap<String, (bool, Option<String>, Option<String>)> =
+                HashMap::new();
             for (host, ip) in resolved_ips {
                 if let Some((location, isp)) = ipdb.find_map(&ip) {
-                    let matches = metadata_matches_filter(location.as_deref(), &self.config.filter.location)
-                        && metadata_matches_filter(isp.as_deref(), &self.config.filter.isp);
+                    let matches =
+                        metadata_matches_filter(location.as_deref(), &self.config.filter.location)
+                            && metadata_matches_filter(isp.as_deref(), &self.config.filter.isp);
                     host_matches.insert(host, (matches, location, isp));
                 } else {
                     let matches = metadata_matches_filter(None, &self.config.filter.location)
@@ -1309,7 +1315,10 @@ impl Engine {
                     continue;
                 }
                 if let Some(host) = crate::playlist::url_host(&channel.url) {
-                    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                    let host = host
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .to_string();
                     if let Some((matches, location, isp)) = host_matches.get(&host) {
                         if *matches {
                             if channel.location.is_none() {
@@ -1358,11 +1367,22 @@ impl Engine {
         for mut channel in results {
             let ipdb_clone = ipdb.clone();
             post_resolve_tasks.push(async move {
-                if channel.is_online && !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
+                if channel.is_online
+                    && !is_retained_origin(channel.origin)
+                    && !(channel.location.is_some() && channel.isp.is_some())
+                {
                     if let Some(host) = crate::playlist::url_host(&channel.url) {
-                        let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                        let host = host
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .to_string();
                         if host.parse::<std::net::IpAddr>().is_err() {
-                            if let Ok(Ok(mut addrs)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(format!("{}:0", host))).await {
+                            if let Ok(Ok(mut addrs)) = tokio::time::timeout(
+                                Duration::from_secs(2),
+                                tokio::net::lookup_host(format!("{}:0", host)),
+                            )
+                            .await
+                            {
                                 if let Some(addr) = addrs.next() {
                                     let ip = addr.ip().to_string();
                                     if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
@@ -1830,7 +1850,7 @@ mod tests {
             check_timeout: 10_000,
             speed_test_timeout: None,
             speed_test_allow_invalid_certs: true,
-            speed_test_max_download_bytes: 8 * 1024 * 1024,
+            speed_test_max_download_bytes: 1024 * 1024,
             speed_test_segment_concurrency: 2,
             speed_test_filter_host: false,
             open_full_speed_test: false,
@@ -2041,7 +2061,7 @@ ipv6_support = false
 
     #[tokio::test]
     async fn unsupported_ipv6_gets_python_default_speed_result_without_probe() {
-        let checker = Checker::with_options(1, 1, true, 8 * 1024 * 1024, 2);
+        let checker = Checker::with_options(1, 1, true, 1024 * 1024, 2);
         let results = check_filtered_channels(
             vec![channel("IPv6", "Test", "http://[::1]/live.m3u8")],
             &checker,
@@ -2078,7 +2098,7 @@ ipv6_support = false
 
     #[tokio::test]
     async fn supported_ipv6_is_probed_instead_of_default_proxy_result() {
-        let checker = Checker::with_options(1, 1, true, 8 * 1024 * 1024, 2);
+        let checker = Checker::with_options(1, 1, true, 1024 * 1024, 2);
         let results = check_filtered_channels(
             vec![channel("IPv6", "Test", "http://[::1]/live.m3u8")],
             &checker,
@@ -2096,7 +2116,7 @@ ipv6_support = false
 
     #[tokio::test]
     async fn filter_host_unsupported_ipv6_defaults_without_poisoning_host_replay() {
-        let checker = Checker::with_options(1, 1, true, 8 * 1024 * 1024, 2);
+        let checker = Checker::with_options(1, 1, true, 1024 * 1024, 2);
         let results = check_filtered_channels(
             vec![
                 channel("IPv6 A", "Test", "http://[::1]/a.m3u8"),

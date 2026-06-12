@@ -261,8 +261,8 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
     }
 
     let enc_data_val = enc_data_res.data.unwrap();
-    let enc_data: EncryptionData = serde_json::from_value(enc_data_val)
-        .context("failed to parse encryption data struct")?;
+    let enc_data: EncryptionData =
+        serde_json::from_value(enc_data_val).context("failed to parse encryption data struct")?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -315,8 +315,8 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
     }
 
     let room_data_val = room_info.data.unwrap();
-    let room_data: RoomData = serde_json::from_value(room_data_val)
-        .context("failed to parse room data struct")?;
+    let room_data: RoomData =
+        serde_json::from_value(room_data_val).context("failed to parse room data struct")?;
     let rtmp_live = room_data
         .rtmp_live
         .ok_or_else(|| anyhow::anyhow!("stream is offline"))?;
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(room_info.error, 1);
         assert_eq!(room_info.msg, "房间未开播");
         assert!(room_info.data.is_some());
-        
+
         let data_val = room_info.data.unwrap();
         let parsed_data: Result<RoomData, _> = serde_json::from_value(data_val);
         assert!(parsed_data.is_err());
