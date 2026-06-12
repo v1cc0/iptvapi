@@ -155,8 +155,19 @@ impl Checker {
         if looks_like_hls_url(&next) {
             return Box::pin(self.probe_playable_inner(next, depth + 1, headers)).await;
         }
+        let metadata = self.ffprobe_probe(url, headers).await;
+        if matches!(metadata, Some(ref result) if !result.is_playable) {
+            return ProbeResult::offline();
+        }
+
         let speed = self.measure_hls_segments(url, &text, headers).await;
-        let result = ProbeResult::online_with_speed(None, speed);
+        let result = match metadata {
+            Some(mut result) => {
+                result.speed = speed;
+                result
+            }
+            None => ProbeResult::online_with_speed(None, speed),
+        };
         self.ffmpeg_fallback_when_speedless(url, headers, result)
             .await
     }
@@ -470,16 +481,16 @@ fn find_header<'a>(headers: &'a HashMap<String, String>, wanted: &str) -> Option
         .map(|(_, value)| value)
 }
 
-fn ffprobe_output_has_media(stdout: &[u8]) -> bool {
+fn ffprobe_output_has_video(stdout: &[u8]) -> bool {
     let output = String::from_utf8_lossy(stdout);
     output.lines().map(str::trim).any(|line| {
         let codec = line.split(',').next().unwrap_or(line).trim();
-        matches!(codec, "video" | "audio")
+        codec == "video"
     })
 }
 
 fn parse_ffprobe_probe_output(success: bool, stdout: &[u8]) -> ProbeResult {
-    if !success || !ffprobe_output_has_media(stdout) {
+    if !success || !ffprobe_output_has_video(stdout) {
         return ProbeResult::offline();
     }
     ProbeResult::online(ffprobe_output_resolution(stdout))
@@ -831,12 +842,12 @@ seg/0001.ts
     }
 
     #[test]
-    fn ffprobe_output_requires_audio_or_video_stream() {
-        assert!(ffprobe_output_has_media(b"video\naudio\n"));
-        assert!(ffprobe_output_has_media(b"video,1920,1080\n"));
-        assert!(ffprobe_output_has_media(b"audio\n"));
-        assert!(!ffprobe_output_has_media(b"subtitle\n"));
-        assert!(!ffprobe_output_has_media(b""));
+    fn ffprobe_output_requires_video_stream() {
+        assert!(ffprobe_output_has_video(b"video\naudio\n"));
+        assert!(ffprobe_output_has_video(b"video,1920,1080\n"));
+        assert!(!ffprobe_output_has_video(b"audio\n"));
+        assert!(!ffprobe_output_has_video(b"subtitle\n"));
+        assert!(!ffprobe_output_has_video(b""));
     }
 
     #[test]

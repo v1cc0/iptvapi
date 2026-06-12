@@ -874,13 +874,15 @@ fn channel_matches_speed_test_filters(channel: &Channel, config: &EngineConfig) 
             return false;
         }
     }
-    if config.open_filter_resolution
-        && let Some(resolution) = channel
+    if config.open_speed_test && config.open_filter_resolution {
+        let Some(resolution) = channel
             .resolution
             .as_deref()
             .map(str::trim)
             .filter(|resolution| !resolution.is_empty())
-    {
+        else {
+            return false;
+        };
         let value = resolution_value(resolution);
         let min = resolution_value(&config.min_resolution);
         let max = resolution_value(&config.max_resolution);
@@ -1963,6 +1965,9 @@ ipv6_support = false
 
         channel.speed = Some(2.0);
         channel.resolution = Some("3840x2160".to_owned());
+        assert!(!channel_matches_speed_test_filters(&channel, &config));
+
+        channel.resolution = None;
         assert!(!channel_matches_speed_test_filters(&channel, &config));
 
         config.open_supply = true;
