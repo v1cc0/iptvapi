@@ -51,17 +51,18 @@ impl Checker {
         }
     }
 
-    pub fn timeout(&self) -> Duration {
-        self.timeout
-    }
-
     pub async fn check_channel(&self, mut channel: Channel) -> Channel {
         let _permit = self.semaphore.acquire().await.unwrap();
 
         let start = Instant::now();
-        let probe = self
-            .probe_playable(&channel.url, channel.headers.as_ref())
-            .await;
+        let check_timeout = self.timeout.saturating_add(Duration::from_secs(5));
+        let probe = match timeout(check_timeout, self.probe_playable(&channel.url, channel.headers.as_ref())).await {
+            Ok(res) => res,
+            Err(_) => {
+                tracing::warn!("Channel check timed out for {}", channel.url);
+                ProbeResult::offline()
+            }
+        };
 
         if probe.is_playable {
             channel.latency = Some(start.elapsed().as_millis() as u64);
