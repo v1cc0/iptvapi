@@ -1618,6 +1618,22 @@ impl Engine {
     }
 }
 
+async fn check_channel_with_timeout(checker: &Checker, channel: Channel, timeout_dur: Duration) -> Channel {
+    let channel_url = channel.url.clone();
+    let fallback_channel = channel.clone();
+    match tokio::time::timeout(timeout_dur, checker.check_channel(channel)).await {
+        Ok(res) => res,
+        Err(_) => {
+            tracing::warn!("Channel check timed out for {}", channel_url);
+            let mut c = fallback_channel;
+            c.is_online = false;
+            c.latency = None;
+            c.last_checked = Some(chrono::Utc::now());
+            c
+        }
+    }
+}
+
 async fn check_filtered_channels(
     channels: Vec<Channel>,
     checker: &Checker,
@@ -1627,6 +1643,9 @@ async fn check_filtered_channels(
     ipv6_proxy_enabled: bool,
 ) -> Vec<Channel> {
     let channels = limit_speed_test_candidates(channels, open_full_speed_test, urls_limit);
+    let checker_timeout = checker.timeout();
+    let task_timeout = checker_timeout.saturating_add(Duration::from_secs(5));
+
     if !filter_host {
         let mut check_tasks = Vec::new();
         for channel in channels {
@@ -1639,7 +1658,7 @@ async fn check_filtered_channels(
                 {
                     mark_unsupported_ipv6_default_result(channel)
                 } else {
-                    checker.check_channel(channel).await
+                    check_channel_with_timeout(checker, channel, task_timeout).await
                 }
             });
         }
@@ -1681,7 +1700,9 @@ async fn check_filtered_channels(
         probe_inputs
             .into_iter()
             .enumerate()
-            .map(|(index, channel)| async move { (index, checker.check_channel(channel).await) }),
+            .map(|(index, channel)| async move {
+                (index, check_channel_with_timeout(checker, channel, task_timeout).await)
+            }),
     )
     .await;
 

@@ -51,6 +51,10 @@ impl Checker {
         }
     }
 
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     pub async fn check_channel(&self, mut channel: Channel) -> Channel {
         let _permit = self.semaphore.acquire().await.unwrap();
 
