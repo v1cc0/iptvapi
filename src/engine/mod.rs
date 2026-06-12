@@ -1208,16 +1208,17 @@ impl Engine {
 
         // Asynchronously and concurrently pre-resolve DNS and enrich location/ISP from IPDB
         // to avoid blocking sequentially for minutes.
+        let needs_ipdb_filtering = !self.config.filter.location.is_empty() || !self.config.filter.isp.is_empty();
         let mut resolve_tasks = Vec::new();
         for mut channel in all_channels {
             let ipdb_clone = ipdb.clone();
             resolve_tasks.push(async move {
-                if !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
+                if needs_ipdb_filtering && !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
                     if let Some(host) = crate::playlist::url_host(&channel.url) {
                         let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
                         if host.parse::<std::net::IpAddr>().is_err() {
-                            // Resolve hostname asynchronously
-                            if let Ok(mut addrs) = tokio::net::lookup_host(format!("{}:0", host)).await {
+                            // Resolve hostname asynchronously with a 2-second timeout
+                            if let Ok(Ok(mut addrs)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(format!("{}:0", host))).await {
                                 if let Some(addr) = addrs.next() {
                                     let ip = addr.ip().to_string();
                                     if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
@@ -1283,7 +1284,7 @@ impl Engine {
 
         // 3. Check (Concurrent) - skip those already marked online by whitelist if desired,
         // but here we check everyone for latency unless it's whitelist.
-        let results = if self.config.engine.open_speed_test {
+        let mut results = if self.config.engine.open_speed_test {
             tracing::info!("Checking {} channels...", filtered_channels.len());
             check_filtered_channels(
                 filtered_channels,
@@ -1301,6 +1302,50 @@ impl Engine {
                 .map(mark_channel_online_without_speed_test)
                 .collect()
         };
+
+        // Post-check DNS resolution / IPDB enrichment for online channels
+        if !needs_ipdb_filtering {
+            let mut post_resolve_tasks = Vec::new();
+            for mut channel in results {
+                let ipdb_clone = ipdb.clone();
+                post_resolve_tasks.push(async move {
+                    if channel.is_online && !is_retained_origin(channel.origin) && !(channel.location.is_some() && channel.isp.is_some()) {
+                        if let Some(host) = crate::playlist::url_host(&channel.url) {
+                            let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+                            if host.parse::<std::net::IpAddr>().is_err() {
+                                if let Ok(Ok(mut addrs)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(format!("{}:0", host))).await {
+                                    if let Some(addr) = addrs.next() {
+                                        let ip = addr.ip().to_string();
+                                        if let Some((location, isp)) = ipdb_clone.find_map(&ip) {
+                                            if channel.location.is_none() {
+                                                channel.location = location;
+                                            }
+                                            if channel.isp.is_none() {
+                                                channel.isp = isp;
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                if let Some((location, isp)) = ipdb_clone.find_map(&host) {
+                                    if channel.location.is_none() {
+                                        channel.location = location;
+                                    }
+                                    if channel.isp.is_none() {
+                                        channel.isp = isp;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    channel
+                });
+            }
+            results = futures::stream::iter(post_resolve_tasks)
+                .buffer_unordered(50)
+                .collect::<Vec<_>>()
+                .await;
+        }
 
         if self.config.output.open_history {
             for channel in results
