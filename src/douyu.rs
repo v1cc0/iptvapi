@@ -1,7 +1,10 @@
 use anyhow::Context;
+use axum::body::Bytes;
+use futures::{Stream, StreamExt, stream};
 use reqwest::header::{HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -368,6 +371,79 @@ pub async fn open_stream(url: &str) -> anyhow::Result<reqwest::Response> {
         .context("failed to open Douyu stream")?
         .error_for_status()
         .context("Douyu stream returned an error status")
+}
+
+type DouyuByteStream = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>;
+
+struct ProxyState {
+    room_id: u64,
+    body: Option<DouyuByteStream>,
+    reconnect_failures: u8,
+}
+
+/// Keeps one local HTTP response alive across Douyu's expiring stream URLs.
+pub fn proxy_stream(
+    room_id: u64,
+    upstream: reqwest::Response,
+) -> impl Stream<Item = anyhow::Result<Bytes>> + Send + 'static {
+    stream::unfold(
+        ProxyState {
+            room_id,
+            body: Some(Box::pin(upstream.bytes_stream())),
+            reconnect_failures: 0,
+        },
+        |mut state| async move {
+            loop {
+                if let Some(body) = state.body.as_mut() {
+                    match body.next().await {
+                        Some(Ok(chunk)) => return Some((Ok(chunk), state)),
+                        Some(Err(error)) => {
+                            tracing::warn!(
+                                room_id = state.room_id,
+                                error = %error,
+                                "Douyu upstream stream interrupted; reconnecting"
+                            );
+                        }
+                        None => {
+                            tracing::info!(
+                                room_id = state.room_id,
+                                "Douyu upstream stream ended; refreshing play URL"
+                            );
+                        }
+                    }
+                    state.body = None;
+                }
+
+                if state.reconnect_failures >= 3 {
+                    tracing::warn!(
+                        room_id = state.room_id,
+                        "Douyu stream reconnect failed repeatedly; closing local stream"
+                    );
+                    return None;
+                }
+                state.reconnect_failures += 1;
+
+                match resolve_douyu_play_url_fresh(state.room_id).await {
+                    Ok(url) => match open_stream(&url).await {
+                        Ok(response) => {
+                            state.body = Some(Box::pin(response.bytes_stream()));
+                            state.reconnect_failures = 0;
+                        }
+                        Err(error) => tracing::warn!(
+                            room_id = state.room_id,
+                            error = %error,
+                            "Failed to reopen Douyu stream"
+                        ),
+                    },
+                    Err(error) => tracing::warn!(
+                        room_id = state.room_id,
+                        error = %error,
+                        "Failed to refresh Douyu play URL"
+                    ),
+                }
+            }
+        },
+    )
 }
 
 #[cfg(test)]

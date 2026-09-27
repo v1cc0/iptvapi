@@ -1090,7 +1090,8 @@ async fn get_douyu_play_hls(Path(room_id): Path<u64>) -> impl IntoResponse {
                     .get(axum::http::header::CONTENT_TYPE)
                     .cloned()
                     .unwrap_or_else(|| axum::http::HeaderValue::from_static("video/x-flv"));
-                let mut response = Response::new(Body::from_stream(upstream.bytes_stream()));
+                let mut response =
+                    Response::new(Body::from_stream(douyu::proxy_stream(room_id, upstream)));
                 response
                     .headers_mut()
                     .insert(axum::http::header::CONTENT_TYPE, content_type);
