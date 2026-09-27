@@ -316,6 +316,7 @@ pub async fn official_hls_playlist(pk: u64) -> anyhow::Result<String> {
 
 fn official_http_client() -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(10))
         .user_agent(OFFICIAL_HTTP_USER_AGENT)
         .cookie_store(true)
@@ -542,6 +543,7 @@ pub async fn official_status() -> GdtvStatus {
 
 pub async fn fetch_official_channels() -> anyhow::Result<Vec<OfficialGdtvChannel>> {
     let client = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(10))
         .user_agent(OFFICIAL_HTTP_USER_AGENT)
         .build()?;

@@ -25,6 +25,7 @@ impl Fetcher {
     pub fn new(timeout_secs: u64, http_proxy: &str) -> Self {
         let timeout = Duration::from_secs(timeout_secs.max(1));
         let mut builder = Client::builder()
+            .use_rustls_tls()
             .timeout(timeout)
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
         if let Some(proxy) = http_proxy_from_config(http_proxy) {

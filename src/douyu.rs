@@ -24,6 +24,7 @@ static STREAM_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 fn get_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            .use_rustls_tls()
             .timeout(HTTP_TIMEOUT)
             .cookie_store(true)
             .build()
@@ -35,6 +36,7 @@ fn get_stream_client() -> &'static reqwest::Client {
     STREAM_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .cookie_store(true)
+            .use_native_tls()
             .build()
             .unwrap_or_default()
     })

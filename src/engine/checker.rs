@@ -36,6 +36,7 @@ impl Checker {
         segment_concurrency: usize,
     ) -> Self {
         let client = Client::builder()
+            .use_rustls_tls()
             .timeout(Duration::from_millis(timeout_ms))
             .danger_accept_invalid_certs(allow_invalid_certs)
             .build()

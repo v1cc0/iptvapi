@@ -118,6 +118,7 @@ pub async fn run(config: &EpgConfig, names: Option<&HashSet<String>>) -> Result<
     }
 
     let mut client_builder = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(Duration::from_millis(config.timeout_ms))
         .user_agent("iptvapi-rs/0.0.2");
     if let Some(proxy) = http_proxy_from_config(&config.http_proxy) {

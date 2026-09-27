@@ -202,6 +202,7 @@ pub fn get_client() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                .use_rustls_tls()
                 .timeout(std::time::Duration::from_secs(15))
                 .cookie_store(true)
                 .build()
