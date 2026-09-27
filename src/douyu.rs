@@ -19,11 +19,21 @@ struct CachedPlayUrl {
 
 static PLAY_URL_CACHE: OnceLock<Mutex<HashMap<u64, CachedPlayUrl>>> = OnceLock::new();
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static STREAM_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 fn get_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
+            .cookie_store(true)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+fn get_stream_client() -> &'static reqwest::Client {
+    STREAM_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
             .cookie_store(true)
             .build()
             .unwrap_or_default()
@@ -336,6 +346,26 @@ pub async fn resolve_douyu_play_url(room_id: u64) -> anyhow::Result<String> {
     }
 
     Ok(stream_url)
+}
+
+/// Opens a fresh Douyu URL for a new player connection.
+pub async fn resolve_douyu_play_url_fresh(room_id: u64) -> anyhow::Result<String> {
+    play_url_cache().lock().await.remove(&room_id);
+    resolve_douyu_play_url(room_id).await
+}
+
+/// Proxies the live response so player reconnects return to our resolver.
+pub async fn open_stream(url: &str) -> anyhow::Result<reqwest::Response> {
+    get_stream_client()
+        .get(url)
+        .header(USER_AGENT, USER_AGENT_VAL)
+        .header("Accept", "*/*")
+        .header("Accept-Encoding", "identity")
+        .send()
+        .await
+        .context("failed to open Douyu stream")?
+        .error_for_status()
+        .context("Douyu stream returned an error status")
 }
 
 #[cfg(test)]

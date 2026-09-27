@@ -20,7 +20,7 @@ use axum::{
     body::Body,
     extract::{Form, Path, State},
     http::{HeaderMap, header},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -1082,8 +1082,33 @@ async fn get_cs_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
 }
 
 async fn get_douyu_play_hls(Path(room_id): Path<u64>) -> impl IntoResponse {
-    match douyu::resolve_douyu_play_url(room_id).await {
-        Ok(url) => axum::response::Redirect::temporary(&url).into_response(),
+    match douyu::resolve_douyu_play_url_fresh(room_id).await {
+        Ok(url) => match douyu::open_stream(&url).await {
+            Ok(upstream) => {
+                let content_type = upstream
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .cloned()
+                    .unwrap_or_else(|| axum::http::HeaderValue::from_static("video/x-flv"));
+                let mut response = Response::new(Body::from_stream(upstream.bytes_stream()));
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::CONTENT_TYPE, content_type);
+                response.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-store"),
+                );
+                response.headers_mut().insert(
+                    axum::http::header::ACCEPT_RANGES,
+                    axum::http::HeaderValue::from_static("none"),
+                );
+                response
+            }
+            Err(error) => {
+                tracing::warn!("Failed to open Douyu stream for room {room_id}: {error:#}");
+                (StatusCode::BAD_GATEWAY, "Douyu stream unavailable").into_response()
+            }
+        },
         Err(error) => {
             crate::error_log::push(
                 "douyu",
