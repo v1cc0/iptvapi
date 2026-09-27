@@ -11,6 +11,8 @@ use tokio::sync::Mutex;
 
 const DEVICE_ID: &str = "10000000000000000000000000003306";
 const CACHE_TTL_PLAY_URL: Duration = Duration::from_secs(120); // 2 minutes play url cache
+const INITIAL_PLAY_URL_PREFETCH: Duration = Duration::from_secs(240);
+const RECONNECT_PLAY_URL_PREFETCH: Duration = Duration::from_secs(180);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const USER_AGENT_VAL: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36";
 
@@ -375,6 +377,19 @@ pub async fn open_stream(url: &str) -> anyhow::Result<reqwest::Response> {
 
 type DouyuByteStream = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>;
 
+// ponytail: one short-lived prefetch task per client; add per-room deduplication if viewer counts grow.
+fn schedule_play_url_prefetch(room_id: u64, delay: Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        match resolve_douyu_play_url_fresh(room_id).await {
+            Ok(_) => tracing::debug!(room_id, "Prefetched fresh Douyu play URL"),
+            Err(error) => {
+                tracing::warn!(room_id, error = %error, "Failed to prefetch Douyu play URL")
+            }
+        }
+    });
+}
+
 struct ProxyState {
     room_id: u64,
     body: Option<DouyuByteStream>,
@@ -386,6 +401,7 @@ pub fn proxy_stream(
     room_id: u64,
     upstream: reqwest::Response,
 ) -> impl Stream<Item = anyhow::Result<Bytes>> + Send + 'static {
+    schedule_play_url_prefetch(room_id, INITIAL_PLAY_URL_PREFETCH);
     stream::unfold(
         ProxyState {
             room_id,
@@ -423,11 +439,12 @@ pub fn proxy_stream(
                 }
                 state.reconnect_failures += 1;
 
-                match resolve_douyu_play_url_fresh(state.room_id).await {
+                match resolve_douyu_play_url(state.room_id).await {
                     Ok(url) => match open_stream(&url).await {
                         Ok(response) => {
                             state.body = Some(Box::pin(response.bytes_stream()));
                             state.reconnect_failures = 0;
+                            schedule_play_url_prefetch(state.room_id, RECONNECT_PLAY_URL_PREFETCH);
                         }
                         Err(error) => tracing::warn!(
                             room_id = state.room_id,
