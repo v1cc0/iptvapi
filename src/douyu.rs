@@ -407,21 +407,63 @@ fn schedule_play_url_prefetch(room_id: u64, delay: Duration) -> PlayUrlPrefetch 
     prefetch
 }
 
-#[derive(Default)]
 struct FlvTimeline {
-    last_media: Option<u32>,
+    last_video: Option<u32>,
+    last_video_source: Option<u32>,
+    last_audio: Option<u32>,
+    last_audio_source: Option<u32>,
     has_video: bool,
     awaiting_resume: bool,
     offset_ms: i64,
+    video_step_ms: u32,
+    audio_step_ms: u32,
+}
+
+impl Default for FlvTimeline {
+    fn default() -> Self {
+        Self {
+            last_video: None,
+            last_video_source: None,
+            last_audio: None,
+            last_audio_source: None,
+            has_video: false,
+            awaiting_resume: false,
+            offset_ms: 0,
+            video_step_ms: 33,
+            audio_step_ms: 21,
+        }
+    }
 }
 
 impl FlvTimeline {
     fn reconnect(&mut self) {
-        self.awaiting_resume = self.last_media.is_some();
+        self.awaiting_resume = self.last_video.is_some() || self.last_audio.is_some();
     }
 
     fn output_timestamp(&self, upstream: u32) -> u32 {
         (i64::from(upstream) + self.offset_ms).clamp(0, i64::from(u32::MAX)) as u32
+    }
+
+    fn last_timestamp(&self) -> Option<u32> {
+        self.last_video.max(self.last_audio)
+    }
+
+    fn resume_at(&self, kind: u8) -> Option<u32> {
+        match kind {
+            9 => self
+                .last_video
+                .map(|last| last.saturating_add(self.video_step_ms))
+                .into_iter()
+                .chain(
+                    self.last_audio
+                        .map(|last| last.saturating_add(self.audio_step_ms)),
+                )
+                .max(),
+            8 => self
+                .last_audio
+                .map(|last| last.saturating_add(self.audio_step_ms)),
+            _ => None,
+        }
     }
 
     /// Returns whether a forwarded tag contains media, or None if it overlaps the old stream.
@@ -436,35 +478,54 @@ impl FlvTimeline {
         };
         let original = u32::from_be_bytes([tag[7], tag[4], tag[5], tag[6]]);
         let mut timestamp = original;
-        if let Some(last) = self.last_media {
-            if self.awaiting_resume && media {
-                if self.has_video && !(kind == 9 && payload[0] >> 4 == 1) {
+        if self.awaiting_resume && media {
+            if self.has_video && !(kind == 9 && payload[0] >> 4 == 1) {
+                return None;
+            }
+            let source_last = if kind == 9 {
+                self.last_video_source
+            } else {
+                self.last_audio_source
+            };
+            if let Some(last) = source_last {
+                if (last.saturating_sub(15_000)..=last.saturating_add(5_000)).contains(&original)
+                    && original <= last
+                {
                     return None;
                 }
-                // shortcut: infer a shared broadcast clock from a short overlap or gap.
-                if (last.saturating_sub(15_000)..=last.saturating_add(5_000)).contains(&original) {
-                    if original <= last {
-                        return None;
-                    }
-                } else {
-                    self.offset_ms = i64::from(self.output_timestamp(last).saturating_add(1))
-                        - i64::from(original);
-                    self.last_media = None;
-                }
-                self.awaiting_resume = false;
-            } else if !media && (self.awaiting_resume || self.offset_ms != 0) {
-                // Config tags can carry timestamps from long before the first media packet.
-                timestamp = last;
             }
+            if let Some(resume_at) = self.resume_at(kind) {
+                self.offset_ms = i64::from(resume_at) - i64::from(original);
+            }
+            self.awaiting_resume = false;
+        } else if !media && (self.awaiting_resume || self.offset_ms != 0) {
+            timestamp = self.last_timestamp().unwrap_or(original);
         }
-        let timestamp = self.output_timestamp(timestamp);
+        let timestamp = if media {
+            self.output_timestamp(timestamp)
+        } else {
+            timestamp
+        };
         if timestamp != original {
             let [ext, hi, mid, lo] = timestamp.to_be_bytes();
             tag[4..8].copy_from_slice(&[hi, mid, lo, ext]);
         }
         if media {
-            self.has_video |= kind == 9;
-            self.last_media = Some(self.last_media.map_or(original, |last| last.max(original)));
+            let (previous, step) = if kind == 9 {
+                self.has_video = true;
+                self.last_video_source = Some(original);
+                (&mut self.last_video, &mut self.video_step_ms)
+            } else {
+                self.last_audio_source = Some(original);
+                (&mut self.last_audio, &mut self.audio_step_ms)
+            };
+            if let Some(previous) = *previous {
+                let elapsed = timestamp.saturating_sub(previous);
+                if (1..=100).contains(&elapsed) {
+                    *step = elapsed;
+                }
+            }
+            *previous = Some(timestamp);
         }
         Some(media)
     }
@@ -582,6 +643,10 @@ mod tests {
         }
     }
 
+    fn flv_timestamp(tag: &[u8]) -> u32 {
+        u32::from_be_bytes([tag[7], tag[4], tag[5], tag[6]])
+    }
+
     #[tokio::test]
     async fn flv_rollover_keeps_complete_tags_on_one_timeline() {
         const HEADER: &[u8] = b"FLV\x01\x05\0\0\0\x09\0\0\0\0";
@@ -612,11 +677,42 @@ mod tests {
                 HEADER,
                 &last,
                 &flv_tag(9, 0x01ff_ffff, &[0x17, 0]),
-                &flv_tag(9, 0x0200_0000, &[0x17, 1]),
-                &flv_tag(8, 0x0200_0017, &[0xaf, 1])
+                &flv_tag(9, 0x0200_0020, &[0x17, 1]),
+                &flv_tag(8, 0x0200_0037, &[0xaf, 1])
             ]
             .concat()
         );
+    }
+
+    #[test]
+    fn flv_rollover_removes_audio_pts_gap() {
+        let mut timeline = FlvTimeline::default();
+        for tag in [
+            flv_tag(9, 304_600, &[0x27, 1]),
+            flv_tag(8, 304_619, &[0xaf, 1]),
+            flv_tag(9, 304_633, &[0x27, 1]),
+            flv_tag(8, 304_640, &[0xaf, 1]),
+        ] {
+            assert_eq!(timeline.rewrite_tag(&mut tag.clone()), Some(true));
+        }
+        timeline.reconnect();
+
+        assert_eq!(
+            timeline.rewrite_tag(&mut flv_tag(8, 307_620, &[0xaf, 1])),
+            None
+        );
+        assert_eq!(
+            timeline.rewrite_tag(&mut flv_tag(9, 307_633, &[0x27, 1])),
+            None
+        );
+        let mut keyframe = flv_tag(9, 307_648, &[0x17, 1]);
+        assert_eq!(timeline.rewrite_tag(&mut keyframe), Some(true));
+        assert_eq!(flv_timestamp(&keyframe), 304_666);
+
+        let mut audio = flv_tag(8, 307_648, &[0xaf, 1]);
+        assert_eq!(timeline.rewrite_tag(&mut audio), Some(true));
+        assert_eq!(flv_timestamp(&audio), 304_666);
+        assert!(flv_timestamp(&audio) - 304_640 <= 100);
     }
 
     #[test]
@@ -640,7 +736,7 @@ mod tests {
         let keyframe = flv_tag(9, 301_066, &[0x17, 1]);
         let mut resumed = keyframe.clone();
         assert_eq!(timeline.rewrite_tag(&mut resumed), Some(true));
-        assert_eq!(resumed, keyframe);
+        assert_eq!(flv_timestamp(&resumed), 301_033);
         assert_eq!(
             timeline.rewrite_tag(&mut flv_tag(8, 301_085, &[0xaf, 1])),
             Some(true)
