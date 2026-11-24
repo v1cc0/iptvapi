@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ppv/play/{*id}", get(get_ppv_play_hls))
         .route("/dota.m3u", get(get_dota_playlist_m3u))
         .route("/cs.m3u", get(get_cs_playlist_m3u))
-        .route("/douyu/play/{room_id}", get(get_douyu_play_hls))
+        .route("/douyu/play/{room_id}", get(get_douyu_play))
         .route("/status", get(get_status))
         .route("/engine/status", get(get_engine_status))
         .route("/metrics", get(get_metrics))
@@ -1081,20 +1081,16 @@ async fn get_cs_playlist_m3u(headers: HeaderMap) -> impl IntoResponse {
     }
 }
 
-async fn get_douyu_play_hls(Path(room_id): Path<u64>) -> impl IntoResponse {
-    match douyu::resolve_douyu_play_url_fresh(room_id).await {
+async fn get_douyu_play(Path(room_id): Path<u64>) -> impl IntoResponse {
+    match douyu::resolve_douyu_play_url(room_id).await {
         Ok(url) => match douyu::open_stream(&url).await {
             Ok(upstream) => {
-                let content_type = upstream
-                    .headers()
-                    .get(axum::http::header::CONTENT_TYPE)
-                    .cloned()
-                    .unwrap_or_else(|| axum::http::HeaderValue::from_static("video/x-flv"));
                 let mut response =
                     Response::new(Body::from_stream(douyu::proxy_stream(room_id, upstream)));
-                response
-                    .headers_mut()
-                    .insert(axum::http::header::CONTENT_TYPE, content_type);
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("video/x-flv"),
+                );
                 response.headers_mut().insert(
                     axum::http::header::CACHE_CONTROL,
                     axum::http::HeaderValue::from_static("no-store"),

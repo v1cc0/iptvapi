@@ -9,6 +9,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Web Framework
 axum = "0.8.9"
+bytes = "1.11.1"
 tower-http = { version = "0.6.11", features = ["cors", "fs"] }
 
 # HTTP Client
