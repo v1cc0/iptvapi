@@ -213,8 +213,7 @@ impl Fetcher {
         let mut channels = Vec::new();
         let mut current_group = "Other".to_string();
 
-        // 简单的 M3U 解析，利用正则表达式或逐行扫描
-        // 也可以使用 m3u8-rs，但对于 IPTV 列表，通常包含 #EXTINF:-1 group-title="xxx",Name 这种非标准扩展
+        // IPTV 列表的 #EXTINF 行可以包含 group-title 等扩展属性。
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
